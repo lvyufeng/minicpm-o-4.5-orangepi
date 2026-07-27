@@ -1,0 +1,114 @@
+{
+ "binFileName": "LinearGatedDeltaRuleCustom_35e1c8027adea975c16824ed8f5d499e",
+ "binFileSuffix": ".o",
+ "blockDim": -1,
+ "coreType": "VectorCore",
+ "core_type": "AIV",
+ "kernelName": "LinearGatedDeltaRuleCustom_35e1c8027adea975c16824ed8f5d499e",
+ "magic": "RT_DEV_BINARY_MAGIC_ELF",
+ "memoryStamping": [],
+ "opParaSize": 16,
+ "parameters": [
+  null,
+  null,
+  null,
+  null,
+  null,
+  null
+ ],
+ "sha256": "2f7aeff40c618604f78dded472465d6c7b489589bd7730a95b80745a422f5530",
+ "workspace": {
+  "num": 1,
+  "size": [
+   -1
+  ],
+  "type": [
+   0
+  ]
+ },
+ "kernelList": [
+  {
+   "kernelName": "LinearGatedDeltaRuleCustom_35e1c8027adea975c16824ed8f5d499e_0"
+  }
+ ],
+ "optionalInputMode": "gen_placeholder",
+ "optionalOutputMode": "gen_placeholder",
+ "supportSuperKernel": 1,
+ "compileInfo": {},
+ "supportInfo": {
+  "implMode": "high_performance",
+  "int64Mode": false,
+  "simplifiedKeyMode": 0,
+  "simplifiedKey": [
+   "LinearGatedDeltaRuleCustom/d=0,p=1/1,2/1,2/1,2/0,2/1,2",
+   "LinearGatedDeltaRuleCustom/d=0,p=0/1,2/1,2/1,2/0,2/1,2",
+   "LinearGatedDeltaRuleCustom/d=1,p=1/1,2/1,2/1,2/0,2/1,2",
+   "LinearGatedDeltaRuleCustom/d=1,p=0/1,2/1,2/1,2/0,2/1,2"
+  ],
+  "optionalInputMode": "gen_placeholder",
+  "optionalOutputMode": "gen_placeholder",
+  "staticKey": "2bb8b9e23864c23e24ce832aa62deb425e22e1da35b5e21ecdfe1a03680d3685,fdfd9915b4ca0f9fa58770dd1330097b1ccbd9109b29b0f69231670b49d93dbb",
+  "inputs": [
+   {
+    "name": "mixed",
+    "index": 0,
+    "dtype": "float16",
+    "format": "ND",
+    "paramType": "required",
+    "shape": [
+     -2
+    ],
+    "format_match_mode": "FormatAgnostic"
+   },
+   {
+    "name": "beta",
+    "index": 1,
+    "dtype": "float16",
+    "format": "ND",
+    "paramType": "required",
+    "shape": [
+     -2
+    ],
+    "format_match_mode": "FormatAgnostic"
+   },
+   {
+    "name": "decay",
+    "index": 2,
+    "dtype": "float16",
+    "format": "ND",
+    "paramType": "required",
+    "shape": [
+     -2
+    ],
+    "format_match_mode": "FormatAgnostic"
+   },
+   {
+    "name": "scratch",
+    "index": 3,
+    "dtype": "float32",
+    "format": "ND",
+    "paramType": "required",
+    "shape": [
+     -2
+    ],
+    "format_match_mode": "FormatAgnostic"
+   }
+  ],
+  "outputs": [
+   {
+    "name": "out",
+    "index": 0,
+    "dtype": "float16",
+    "format": "ND",
+    "paramType": "required",
+    "shape": [
+     -2
+    ],
+    "format_match_mode": "FormatAgnostic"
+   }
+  ],
+  "opMode": "dynamic",
+  "deterministic": "ignore"
+ },
+ "filePath": "ascend310b/linear_gated_delta_rule_custom/LinearGatedDeltaRuleCustom_35e1c8027adea975c16824ed8f5d499e.json"
+}

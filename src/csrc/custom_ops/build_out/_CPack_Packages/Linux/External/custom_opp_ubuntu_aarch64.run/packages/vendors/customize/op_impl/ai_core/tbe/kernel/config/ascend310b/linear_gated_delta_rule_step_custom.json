@@ -1,0 +1,93 @@
+{
+  "binList": [
+    {
+      "implMode": "high_performance",
+      "int64Mode": false,
+      "simplifiedKeyMode": 0,
+      "simplifiedKey": [
+        "LinearGatedDeltaRuleStepCustom/d=0,p=1/1,2/1,2/1,2/0,2/0,2/1,2",
+        "LinearGatedDeltaRuleStepCustom/d=0,p=0/1,2/1,2/1,2/0,2/0,2/1,2",
+        "LinearGatedDeltaRuleStepCustom/d=1,p=1/1,2/1,2/1,2/0,2/0,2/1,2",
+        "LinearGatedDeltaRuleStepCustom/d=1,p=0/1,2/1,2/1,2/0,2/0,2/1,2"
+      ],
+      "staticKey": "b3775593574a6579f3d48456fc616845fd44afef11b853a6409bbd4072836d67,de67b88e929dec21d9e18cddf4e7392bad3b2973d149488b008709fe3cfbb839",
+      "inputs": [
+        {
+          "name": "mixed",
+          "index": 0,
+          "dtype": "float16",
+          "format": "ND",
+          "paramType": "required",
+          "shape": [
+            -2
+          ],
+          "format_match_mode": "FormatAgnostic"
+        },
+        {
+          "name": "beta",
+          "index": 1,
+          "dtype": "float16",
+          "format": "ND",
+          "paramType": "required",
+          "shape": [
+            -2
+          ],
+          "format_match_mode": "FormatAgnostic"
+        },
+        {
+          "name": "decay",
+          "index": 2,
+          "dtype": "float16",
+          "format": "ND",
+          "paramType": "required",
+          "shape": [
+            -2
+          ],
+          "format_match_mode": "FormatAgnostic"
+        },
+        {
+          "name": "state",
+          "index": 3,
+          "dtype": "float32",
+          "format": "ND",
+          "paramType": "required",
+          "shape": [
+            -2
+          ],
+          "format_match_mode": "FormatAgnostic"
+        },
+        {
+          "name": "scratch",
+          "index": 4,
+          "dtype": "float32",
+          "format": "ND",
+          "paramType": "required",
+          "shape": [
+            -2
+          ],
+          "format_match_mode": "FormatAgnostic"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "out",
+          "index": 0,
+          "dtype": "float16",
+          "format": "ND",
+          "paramType": "required",
+          "shape": [
+            -2
+          ],
+          "format_match_mode": "FormatAgnostic"
+        }
+      ],
+      "opMode": "dynamic",
+      "optionalInputMode": "gen_placeholder",
+      "deterministic": "ignore",
+      "optionalOutputMode": "gen_placeholder",
+      "binInfo": {
+        "jsonFilePath": "ascend310b/linear_gated_delta_rule_step_custom/LinearGatedDeltaRuleStepCustom_ef8642bc254686b8e72611c4685a2b4f.json"
+      }
+    }
+  ]
+}

@@ -117,13 +117,35 @@ python tests/e2e_realtime.py
 ## 开发路线
 
 - [x] 项目结构搭建
-- [ ] C++ backend 协议层实现
-- [ ] 语言模型推理引擎移植
-- [ ] 视觉塔移植 (SigLIP)
-- [ ] 音频编解码器移植
-- [ ] 自定义 AscendC 算子优化
-- [ ] 权重量化 (INT8/INT4)
-- [ ] 性能 benchmark
+- [x] C++ 推理引擎核心代码移植
+  - [x] ACL 上下文管理
+  - [x] Tensor 抽象层
+  - [x] Weights 索引和加载
+  - [x] 算子封装 (ops.cpp)
+  - [x] Vision Encoder (SigLIP)
+  - [x] Audio Encoder/Decoder (Whisper + TTS)
+  - [x] Language Model (Qwen2 + Linear Attention)
+  - [x] Decoder Layer (Full/Linear Attention)
+- [x] 自定义 AscendC 算子实现
+  - [x] RmsNorm1024Custom
+  - [x] MatmulCubeCustom (M=1 快速路径)
+  - [x] MatmulW4a16Custom (4-bit 量化)
+  - [x] MatmulW8a8I32Custom (8-bit 量化)
+  - [x] SiluMulCustom (算子融合)
+  - [x] GatedRmsNormZCustom
+  - [x] LinearGatedDeltaRuleCustom (线性注意力)
+  - [x] AttentionStepCustom (单步解码注意力)
+- [x] Backend 协议适配层 (Python)
+  - [x] OrangePiBackend 实现
+  - [x] Backend Factory
+  - [x] 兼容 MiniCPM-o-Demo 接口
+- [ ] C++ backend_server 协议层完善
+  - [ ] TCP/WebSocket 协议处理
+  - [ ] init/push/pull 原语实现
+  - [ ] Session 管理
+- [ ] Worker/Gateway 集成测试
+- [ ] 权重量化优化 (W4A16/W8A8 策略调优)
+- [ ] 性能 benchmark 和优化
 
 ## 性能目标
 

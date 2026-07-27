@@ -1,0 +1,90 @@
+{
+ "binFileName": "MatmulCubeCustom_a031c19f6b1adf40526397c206bea345",
+ "binFileSuffix": ".o",
+ "blockDim": -1,
+ "coreType": "VectorCore",
+ "core_type": "AIV",
+ "kernelName": "MatmulCubeCustom_a031c19f6b1adf40526397c206bea345",
+ "magic": "RT_DEV_BINARY_MAGIC_ELF",
+ "memoryStamping": [],
+ "opParaSize": 208,
+ "parameters": [
+  null,
+  null,
+  null,
+  null
+ ],
+ "sha256": "009033fc10711d07bb278ebc5b71df7dcb12ad289a13ecdc978f29b654d8c3f0",
+ "workspace": {
+  "num": 1,
+  "size": [
+   -1
+  ],
+  "type": [
+   0
+  ]
+ },
+ "kernelList": [
+  {
+   "kernelName": "MatmulCubeCustom_a031c19f6b1adf40526397c206bea345_0"
+  }
+ ],
+ "optionalInputMode": "gen_placeholder",
+ "optionalOutputMode": "gen_placeholder",
+ "supportSuperKernel": 1,
+ "compileInfo": {},
+ "supportInfo": {
+  "implMode": "high_performance",
+  "int64Mode": false,
+  "simplifiedKeyMode": 0,
+  "simplifiedKey": [
+   "MatmulCubeCustom/d=0,p=1/1,2/1,2/1,2",
+   "MatmulCubeCustom/d=0,p=0/1,2/1,2/1,2",
+   "MatmulCubeCustom/d=1,p=1/1,2/1,2/1,2",
+   "MatmulCubeCustom/d=1,p=0/1,2/1,2/1,2"
+  ],
+  "optionalInputMode": "gen_placeholder",
+  "optionalOutputMode": "gen_placeholder",
+  "staticKey": "3c0dc7616702378e8e07a3b90bc9753be35e3eedd825cb55a99aa3a5eb343cce,24db4d78a3a31c0287aa11345320c199348443901fef8fe630f68f86fd5dc348",
+  "inputs": [
+   {
+    "name": "a",
+    "index": 0,
+    "dtype": "float16",
+    "format": "ND",
+    "paramType": "required",
+    "shape": [
+     -2
+    ],
+    "format_match_mode": "FormatAgnostic"
+   },
+   {
+    "name": "b",
+    "index": 1,
+    "dtype": "float16",
+    "format": "ND",
+    "paramType": "required",
+    "shape": [
+     -2
+    ],
+    "format_match_mode": "FormatAgnostic"
+   }
+  ],
+  "outputs": [
+   {
+    "name": "c",
+    "index": 0,
+    "dtype": "float16",
+    "format": "ND",
+    "paramType": "required",
+    "shape": [
+     -2
+    ],
+    "format_match_mode": "FormatAgnostic"
+   }
+  ],
+  "opMode": "dynamic",
+  "deterministic": "ignore"
+ },
+ "filePath": "ascend310b/matmul_cube_custom/MatmulCubeCustom_a031c19f6b1adf40526397c206bea345.json"
+}

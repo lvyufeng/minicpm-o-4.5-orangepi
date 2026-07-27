@@ -1,0 +1,720 @@
+{
+  "AddCustom": {
+    "dynamicRankSupport": true,
+    "simplifiedKeyMode": 0,
+    "optionalInputMode": "gen_placeholder",
+    "optionalOutputMode": "gen_placeholder",
+    "params": {
+      "inputs": [
+        {
+          "name": "x",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        },
+        {
+          "name": "y",
+          "index": 1,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "z",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ]
+    },
+    "binaryList": [
+      {
+        "coreType": 2,
+        "simplifiedKey": [
+          "AddCustom/d=0,p=1/1,2/1,2/1,2",
+          "AddCustom/d=0,p=0/1,2/1,2/1,2",
+          "AddCustom/d=1,p=1/1,2/1,2/1,2",
+          "AddCustom/d=1,p=0/1,2/1,2/1,2"
+        ],
+        "binPath": "ascend310b/add_custom/AddCustom_ab1b6750d7f510985325b603cb06dc8b.o",
+        "jsonPath": "ascend310b/add_custom/AddCustom_ab1b6750d7f510985325b603cb06dc8b.json"
+      }
+    ]
+  },
+  "AttentionStepCustom": {
+    "dynamicRankSupport": true,
+    "simplifiedKeyMode": 0,
+    "optionalInputMode": "gen_placeholder",
+    "optionalOutputMode": "gen_placeholder",
+    "params": {
+      "inputs": [
+        {
+          "name": "query",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        },
+        {
+          "name": "k_cache",
+          "index": 1,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        },
+        {
+          "name": "v_cache",
+          "index": 2,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "out",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ],
+      "attrs": [
+        {
+          "name": "context"
+        },
+        {
+          "name": "num_q_heads"
+        },
+        {
+          "name": "num_kv_heads"
+        },
+        {
+          "name": "scale"
+        }
+      ]
+    },
+    "binaryList": [
+      {
+        "coreType": 2,
+        "simplifiedKey": [
+          "AttentionStepCustom/d=0,p=1/1,2/1,2/1,2/1,2",
+          "AttentionStepCustom/d=0,p=0/1,2/1,2/1,2/1,2",
+          "AttentionStepCustom/d=1,p=1/1,2/1,2/1,2/1,2",
+          "AttentionStepCustom/d=1,p=0/1,2/1,2/1,2/1,2"
+        ],
+        "binPath": "ascend310b/attention_step_custom/AttentionStepCustom_25774d75390009b65609983f8b9b3246.o",
+        "jsonPath": "ascend310b/attention_step_custom/AttentionStepCustom_25774d75390009b65609983f8b9b3246.json"
+      }
+    ]
+  },
+  "GatedRmsNormZCustom": {
+    "dynamicRankSupport": true,
+    "simplifiedKeyMode": 0,
+    "optionalInputMode": "gen_placeholder",
+    "optionalOutputMode": "gen_placeholder",
+    "params": {
+      "inputs": [
+        {
+          "name": "core",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        },
+        {
+          "name": "z_silu",
+          "index": 1,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        },
+        {
+          "name": "gamma",
+          "index": 2,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "out",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ]
+    },
+    "binaryList": [
+      {
+        "coreType": 2,
+        "simplifiedKey": [
+          "GatedRmsNormZCustom/d=0,p=1/1,2/1,2/1,2/1,2",
+          "GatedRmsNormZCustom/d=0,p=0/1,2/1,2/1,2/1,2",
+          "GatedRmsNormZCustom/d=1,p=1/1,2/1,2/1,2/1,2",
+          "GatedRmsNormZCustom/d=1,p=0/1,2/1,2/1,2/1,2"
+        ],
+        "binPath": "ascend310b/gated_rms_norm_z_custom/GatedRmsNormZCustom_84d3f94798e1548ab503fc55894dda3d.o",
+        "jsonPath": "ascend310b/gated_rms_norm_z_custom/GatedRmsNormZCustom_84d3f94798e1548ab503fc55894dda3d.json"
+      }
+    ]
+  },
+  "LinearCausalConvCustom": {
+    "dynamicRankSupport": true,
+    "simplifiedKeyMode": 0,
+    "optionalInputMode": "gen_placeholder",
+    "optionalOutputMode": "gen_placeholder",
+    "params": {
+      "inputs": [
+        {
+          "name": "x",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        },
+        {
+          "name": "weight",
+          "index": 1,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "out",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ]
+    },
+    "binaryList": [
+      {
+        "coreType": 2,
+        "simplifiedKey": [
+          "LinearCausalConvCustom/d=0,p=1/1,2/1,2/1,2",
+          "LinearCausalConvCustom/d=0,p=0/1,2/1,2/1,2",
+          "LinearCausalConvCustom/d=1,p=1/1,2/1,2/1,2",
+          "LinearCausalConvCustom/d=1,p=0/1,2/1,2/1,2"
+        ],
+        "binPath": "ascend310b/linear_causal_conv_custom/LinearCausalConvCustom_6a936cbbdd29b10f7bad93faaf549aed.o",
+        "jsonPath": "ascend310b/linear_causal_conv_custom/LinearCausalConvCustom_6a936cbbdd29b10f7bad93faaf549aed.json"
+      }
+    ]
+  },
+  "LinearCausalConvStepCustom": {
+    "dynamicRankSupport": true,
+    "simplifiedKeyMode": 0,
+    "optionalInputMode": "gen_placeholder",
+    "optionalOutputMode": "gen_placeholder",
+    "params": {
+      "inputs": [
+        {
+          "name": "x",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        },
+        {
+          "name": "weight_t",
+          "index": 1,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "out",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ]
+    },
+    "binaryList": [
+      {
+        "coreType": 2,
+        "simplifiedKey": [
+          "LinearCausalConvStepCustom/d=0,p=1/1,2/1,2/1,2",
+          "LinearCausalConvStepCustom/d=0,p=0/1,2/1,2/1,2",
+          "LinearCausalConvStepCustom/d=1,p=1/1,2/1,2/1,2",
+          "LinearCausalConvStepCustom/d=1,p=0/1,2/1,2/1,2"
+        ],
+        "binPath": "ascend310b/linear_causal_conv_step_custom/LinearCausalConvStepCustom_932c2c802e8c2769092a771077bd53fd.o",
+        "jsonPath": "ascend310b/linear_causal_conv_step_custom/LinearCausalConvStepCustom_932c2c802e8c2769092a771077bd53fd.json"
+      }
+    ]
+  },
+  "LinearGatedDeltaRuleCustom": {
+    "dynamicRankSupport": true,
+    "simplifiedKeyMode": 0,
+    "optionalInputMode": "gen_placeholder",
+    "optionalOutputMode": "gen_placeholder",
+    "params": {
+      "inputs": [
+        {
+          "name": "mixed",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        },
+        {
+          "name": "beta",
+          "index": 1,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        },
+        {
+          "name": "decay",
+          "index": 2,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        },
+        {
+          "name": "scratch",
+          "index": 3,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "out",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ]
+    },
+    "binaryList": [
+      {
+        "coreType": 2,
+        "simplifiedKey": [
+          "LinearGatedDeltaRuleCustom/d=0,p=1/1,2/1,2/1,2/0,2/1,2",
+          "LinearGatedDeltaRuleCustom/d=0,p=0/1,2/1,2/1,2/0,2/1,2",
+          "LinearGatedDeltaRuleCustom/d=1,p=1/1,2/1,2/1,2/0,2/1,2",
+          "LinearGatedDeltaRuleCustom/d=1,p=0/1,2/1,2/1,2/0,2/1,2"
+        ],
+        "binPath": "ascend310b/linear_gated_delta_rule_custom/LinearGatedDeltaRuleCustom_35e1c8027adea975c16824ed8f5d499e.o",
+        "jsonPath": "ascend310b/linear_gated_delta_rule_custom/LinearGatedDeltaRuleCustom_35e1c8027adea975c16824ed8f5d499e.json"
+      }
+    ]
+  },
+  "LinearGatedDeltaRuleStepCustom": {
+    "dynamicRankSupport": true,
+    "simplifiedKeyMode": 0,
+    "optionalInputMode": "gen_placeholder",
+    "optionalOutputMode": "gen_placeholder",
+    "params": {
+      "inputs": [
+        {
+          "name": "mixed",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        },
+        {
+          "name": "beta",
+          "index": 1,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        },
+        {
+          "name": "decay",
+          "index": 2,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        },
+        {
+          "name": "state",
+          "index": 3,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        },
+        {
+          "name": "scratch",
+          "index": 4,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "out",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ]
+    },
+    "binaryList": [
+      {
+        "coreType": 2,
+        "simplifiedKey": [
+          "LinearGatedDeltaRuleStepCustom/d=0,p=1/1,2/1,2/1,2/0,2/0,2/1,2",
+          "LinearGatedDeltaRuleStepCustom/d=0,p=0/1,2/1,2/1,2/0,2/0,2/1,2",
+          "LinearGatedDeltaRuleStepCustom/d=1,p=1/1,2/1,2/1,2/0,2/0,2/1,2",
+          "LinearGatedDeltaRuleStepCustom/d=1,p=0/1,2/1,2/1,2/0,2/0,2/1,2"
+        ],
+        "binPath": "ascend310b/linear_gated_delta_rule_step_custom/LinearGatedDeltaRuleStepCustom_ef8642bc254686b8e72611c4685a2b4f.o",
+        "jsonPath": "ascend310b/linear_gated_delta_rule_step_custom/LinearGatedDeltaRuleStepCustom_ef8642bc254686b8e72611c4685a2b4f.json"
+      }
+    ]
+  },
+  "MatmulCubeCustom": {
+    "dynamicRankSupport": true,
+    "simplifiedKeyMode": 0,
+    "optionalInputMode": "gen_placeholder",
+    "optionalOutputMode": "gen_placeholder",
+    "params": {
+      "inputs": [
+        {
+          "name": "a",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        },
+        {
+          "name": "b",
+          "index": 1,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "c",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ]
+    },
+    "binaryList": [
+      {
+        "coreType": 2,
+        "simplifiedKey": [
+          "MatmulCubeCustom/d=0,p=1/1,2/1,2/1,2",
+          "MatmulCubeCustom/d=0,p=0/1,2/1,2/1,2",
+          "MatmulCubeCustom/d=1,p=1/1,2/1,2/1,2",
+          "MatmulCubeCustom/d=1,p=0/1,2/1,2/1,2"
+        ],
+        "binPath": "ascend310b/matmul_cube_custom/MatmulCubeCustom_a031c19f6b1adf40526397c206bea345.o",
+        "jsonPath": "ascend310b/matmul_cube_custom/MatmulCubeCustom_a031c19f6b1adf40526397c206bea345.json"
+      }
+    ]
+  },
+  "MatmulVecCustom": {
+    "dynamicRankSupport": true,
+    "simplifiedKeyMode": 0,
+    "optionalInputMode": "gen_placeholder",
+    "optionalOutputMode": "gen_placeholder",
+    "params": {
+      "inputs": [
+        {
+          "name": "x",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        },
+        {
+          "name": "w",
+          "index": 1,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "out",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ]
+    },
+    "binaryList": [
+      {
+        "coreType": 2,
+        "simplifiedKey": [
+          "MatmulVecCustom/d=0,p=1/1,2/1,2/1,2",
+          "MatmulVecCustom/d=0,p=0/1,2/1,2/1,2",
+          "MatmulVecCustom/d=1,p=1/1,2/1,2/1,2",
+          "MatmulVecCustom/d=1,p=0/1,2/1,2/1,2"
+        ],
+        "binPath": "ascend310b/matmul_vec_custom/MatmulVecCustom_b265b63f51cc2c6f645cacb89bb6ae4c.o",
+        "jsonPath": "ascend310b/matmul_vec_custom/MatmulVecCustom_b265b63f51cc2c6f645cacb89bb6ae4c.json"
+      }
+    ]
+  },
+  "MatmulW4a16Custom": {
+    "dynamicRankSupport": true,
+    "simplifiedKeyMode": 0,
+    "optionalInputMode": "gen_placeholder",
+    "optionalOutputMode": "gen_placeholder",
+    "params": {
+      "inputs": [
+        {
+          "name": "x",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        },
+        {
+          "name": "w",
+          "index": 1,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        },
+        {
+          "name": "scales",
+          "index": 2,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "out",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ]
+    },
+    "binaryList": [
+      {
+        "coreType": 2,
+        "simplifiedKey": [
+          "MatmulW4a16Custom/d=0,p=1/1,2/2,2/1,2/1,2",
+          "MatmulW4a16Custom/d=0,p=0/1,2/2,2/1,2/1,2",
+          "MatmulW4a16Custom/d=1,p=1/1,2/2,2/1,2/1,2",
+          "MatmulW4a16Custom/d=1,p=0/1,2/2,2/1,2/1,2"
+        ],
+        "binPath": "ascend310b/matmul_w4a16_custom/MatmulW4a16Custom_b4ea8c66bf302870e3d2de0489b01a2c.o",
+        "jsonPath": "ascend310b/matmul_w4a16_custom/MatmulW4a16Custom_b4ea8c66bf302870e3d2de0489b01a2c.json"
+      }
+    ]
+  },
+  "MatmulW8a8I32Custom": {
+    "dynamicRankSupport": true,
+    "simplifiedKeyMode": 0,
+    "optionalInputMode": "gen_placeholder",
+    "optionalOutputMode": "gen_placeholder",
+    "params": {
+      "inputs": [
+        {
+          "name": "x",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        },
+        {
+          "name": "w",
+          "index": 1,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "out",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ]
+    },
+    "binaryList": [
+      {
+        "coreType": 2,
+        "simplifiedKey": [
+          "MatmulW8a8I32Custom/d=0,p=1/2,2/2,2/3,2",
+          "MatmulW8a8I32Custom/d=0,p=0/2,2/2,2/3,2",
+          "MatmulW8a8I32Custom/d=1,p=1/2,2/2,2/3,2",
+          "MatmulW8a8I32Custom/d=1,p=0/2,2/2,2/3,2"
+        ],
+        "binPath": "ascend310b/matmul_w8a8_i32_custom/MatmulW8a8I32Custom_0eba77ac1e8999161840aeb633679d61.o",
+        "jsonPath": "ascend310b/matmul_w8a8_i32_custom/MatmulW8a8I32Custom_0eba77ac1e8999161840aeb633679d61.json"
+      }
+    ]
+  },
+  "RmsNorm1024Custom": {
+    "dynamicRankSupport": true,
+    "simplifiedKeyMode": 0,
+    "optionalInputMode": "gen_placeholder",
+    "optionalOutputMode": "gen_placeholder",
+    "params": {
+      "inputs": [
+        {
+          "name": "x",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        },
+        {
+          "name": "gamma",
+          "index": 1,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "out",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ],
+      "attrs": [
+        {
+          "name": "epsilon"
+        }
+      ]
+    },
+    "binaryList": [
+      {
+        "coreType": 2,
+        "simplifiedKey": [
+          "RmsNorm1024Custom/d=0,p=1/1,2/1,2/1,2",
+          "RmsNorm1024Custom/d=0,p=0/1,2/1,2/1,2",
+          "RmsNorm1024Custom/d=1,p=1/1,2/1,2/1,2",
+          "RmsNorm1024Custom/d=1,p=0/1,2/1,2/1,2"
+        ],
+        "binPath": "ascend310b/rms_norm1024_custom/RmsNorm1024Custom_46c7ade25ea41f26daf0f89d0cb944e4.o",
+        "jsonPath": "ascend310b/rms_norm1024_custom/RmsNorm1024Custom_46c7ade25ea41f26daf0f89d0cb944e4.json"
+      }
+    ]
+  },
+  "SiluMulCustom": {
+    "dynamicRankSupport": true,
+    "simplifiedKeyMode": 0,
+    "optionalInputMode": "gen_placeholder",
+    "optionalOutputMode": "gen_placeholder",
+    "params": {
+      "inputs": [
+        {
+          "name": "gate",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        },
+        {
+          "name": "up",
+          "index": 1,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "out",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ]
+    },
+    "binaryList": [
+      {
+        "coreType": 2,
+        "simplifiedKey": [
+          "SiluMulCustom/d=0,p=1/1,2/1,2/1,2",
+          "SiluMulCustom/d=0,p=0/1,2/1,2/1,2",
+          "SiluMulCustom/d=1,p=1/1,2/1,2/1,2",
+          "SiluMulCustom/d=1,p=0/1,2/1,2/1,2"
+        ],
+        "binPath": "ascend310b/silu_mul_custom/SiluMulCustom_4897377f011bed131417168206f955ce.o",
+        "jsonPath": "ascend310b/silu_mul_custom/SiluMulCustom_4897377f011bed131417168206f955ce.json"
+      }
+    ]
+  },
+  "W8a8DequantCustom": {
+    "dynamicRankSupport": true,
+    "simplifiedKeyMode": 0,
+    "optionalInputMode": "gen_placeholder",
+    "optionalOutputMode": "gen_placeholder",
+    "params": {
+      "inputs": [
+        {
+          "name": "acc",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        },
+        {
+          "name": "xScale",
+          "index": 1,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        },
+        {
+          "name": "wScale",
+          "index": 2,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "out",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ]
+    },
+    "binaryList": [
+      {
+        "coreType": 2,
+        "simplifiedKey": [
+          "W8a8DequantCustom/d=0,p=1/3,2/1,2/1,2/1,2",
+          "W8a8DequantCustom/d=0,p=0/3,2/1,2/1,2/1,2",
+          "W8a8DequantCustom/d=1,p=1/3,2/1,2/1,2/1,2",
+          "W8a8DequantCustom/d=1,p=0/3,2/1,2/1,2/1,2"
+        ],
+        "binPath": "ascend310b/w8a8_dequant_custom/W8a8DequantCustom_9b532fd742de43e00fc4fd774355706a.o",
+        "jsonPath": "ascend310b/w8a8_dequant_custom/W8a8DequantCustom_9b532fd742de43e00fc4fd774355706a.json"
+      }
+    ]
+  },
+  "W8a8QuantizeCustom": {
+    "dynamicRankSupport": true,
+    "simplifiedKeyMode": 0,
+    "optionalInputMode": "gen_placeholder",
+    "optionalOutputMode": "gen_placeholder",
+    "params": {
+      "inputs": [
+        {
+          "name": "x",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "xq",
+          "index": 0,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        },
+        {
+          "name": "scale",
+          "index": 1,
+          "paramType": "required",
+          "formatMode": "static_nd_agnostic"
+        }
+      ]
+    },
+    "binaryList": [
+      {
+        "coreType": 2,
+        "simplifiedKey": [
+          "W8a8QuantizeCustom/d=0,p=1/1,2/2,2/1,2",
+          "W8a8QuantizeCustom/d=0,p=0/1,2/2,2/1,2",
+          "W8a8QuantizeCustom/d=1,p=1/1,2/2,2/1,2",
+          "W8a8QuantizeCustom/d=1,p=0/1,2/2,2/1,2"
+        ],
+        "binPath": "ascend310b/w8a8_quantize_custom/W8a8QuantizeCustom_3e597f02638ae772a8b8bf07a6366a30.o",
+        "jsonPath": "ascend310b/w8a8_quantize_custom/W8a8QuantizeCustom_3e597f02638ae772a8b8bf07a6366a30.json"
+      }
+    ]
+  }
+}

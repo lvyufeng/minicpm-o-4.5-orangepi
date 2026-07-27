@@ -1,0 +1,71 @@
+{
+  "binList": [
+    {
+      "implMode": "high_performance",
+      "int64Mode": false,
+      "simplifiedKeyMode": 0,
+      "simplifiedKey": [
+        "MatmulW4a16Custom/d=0,p=1/1,2/2,2/1,2/1,2",
+        "MatmulW4a16Custom/d=0,p=0/1,2/2,2/1,2/1,2",
+        "MatmulW4a16Custom/d=1,p=1/1,2/2,2/1,2/1,2",
+        "MatmulW4a16Custom/d=1,p=0/1,2/2,2/1,2/1,2"
+      ],
+      "staticKey": "fc0581c2044f2af2009f5125bedb6a66e668baf85e3647e2581dbb3da78c33de,b8e85805f5a8cbbd638b4331791ffa7f844d00d2ce12540c1a4b38c5ebb1d871",
+      "inputs": [
+        {
+          "name": "x",
+          "index": 0,
+          "dtype": "float16",
+          "format": "ND",
+          "paramType": "required",
+          "shape": [
+            -2
+          ],
+          "format_match_mode": "FormatAgnostic"
+        },
+        {
+          "name": "w",
+          "index": 1,
+          "dtype": "int8",
+          "format": "ND",
+          "paramType": "required",
+          "shape": [
+            -2
+          ],
+          "format_match_mode": "FormatAgnostic"
+        },
+        {
+          "name": "scales",
+          "index": 2,
+          "dtype": "float16",
+          "format": "ND",
+          "paramType": "required",
+          "shape": [
+            -2
+          ],
+          "format_match_mode": "FormatAgnostic"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "out",
+          "index": 0,
+          "dtype": "float16",
+          "format": "ND",
+          "paramType": "required",
+          "shape": [
+            -2
+          ],
+          "format_match_mode": "FormatAgnostic"
+        }
+      ],
+      "opMode": "dynamic",
+      "optionalInputMode": "gen_placeholder",
+      "deterministic": "ignore",
+      "optionalOutputMode": "gen_placeholder",
+      "binInfo": {
+        "jsonFilePath": "ascend310b/matmul_w4a16_custom/MatmulW4a16Custom_b4ea8c66bf302870e3d2de0489b01a2c.json"
+      }
+    }
+  ]
+}

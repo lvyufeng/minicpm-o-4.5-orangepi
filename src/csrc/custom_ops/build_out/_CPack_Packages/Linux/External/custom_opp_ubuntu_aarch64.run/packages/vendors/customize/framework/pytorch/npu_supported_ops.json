@@ -1,0 +1,62 @@
+{
+  "AddCustom": {
+    "isGray": false,
+    "isHeavy": false
+  },
+  "AttentionStepCustom": {
+    "isGray": false,
+    "isHeavy": false
+  },
+  "GatedRmsNormZCustom": {
+    "isGray": false,
+    "isHeavy": false
+  },
+  "LinearCausalConvCustom": {
+    "isGray": false,
+    "isHeavy": false
+  },
+  "LinearCausalConvStepCustom": {
+    "isGray": false,
+    "isHeavy": false
+  },
+  "LinearGatedDeltaRuleCustom": {
+    "isGray": false,
+    "isHeavy": false
+  },
+  "LinearGatedDeltaRuleStepCustom": {
+    "isGray": false,
+    "isHeavy": false
+  },
+  "MatmulCubeCustom": {
+    "isGray": false,
+    "isHeavy": false
+  },
+  "MatmulVecCustom": {
+    "isGray": false,
+    "isHeavy": false
+  },
+  "MatmulW4a16Custom": {
+    "isGray": false,
+    "isHeavy": false
+  },
+  "MatmulW8a8I32Custom": {
+    "isGray": false,
+    "isHeavy": false
+  },
+  "RmsNorm1024Custom": {
+    "isGray": false,
+    "isHeavy": false
+  },
+  "SiluMulCustom": {
+    "isGray": false,
+    "isHeavy": false
+  },
+  "W8a8DequantCustom": {
+    "isGray": false,
+    "isHeavy": false
+  },
+  "W8a8QuantizeCustom": {
+    "isGray": false,
+    "isHeavy": false
+  }
+}

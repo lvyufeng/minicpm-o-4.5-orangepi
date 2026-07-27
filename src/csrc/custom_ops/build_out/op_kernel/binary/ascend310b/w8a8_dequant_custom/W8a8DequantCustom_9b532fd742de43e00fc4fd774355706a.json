@@ -1,0 +1,102 @@
+{
+ "binFileName": "W8a8DequantCustom_9b532fd742de43e00fc4fd774355706a",
+ "binFileSuffix": ".o",
+ "blockDim": -1,
+ "coreType": "VectorCore",
+ "core_type": "AIV",
+ "kernelName": "W8a8DequantCustom_9b532fd742de43e00fc4fd774355706a",
+ "magic": "RT_DEV_BINARY_MAGIC_ELF",
+ "memoryStamping": [],
+ "opParaSize": 16,
+ "parameters": [
+  null,
+  null,
+  null,
+  null,
+  null
+ ],
+ "sha256": "bf1df8ffdafba812000c63a44370eb0d8c633dfb560715d163d313a422d4ed34",
+ "workspace": {
+  "num": 1,
+  "size": [
+   -1
+  ],
+  "type": [
+   0
+  ]
+ },
+ "kernelList": [
+  {
+   "kernelName": "W8a8DequantCustom_9b532fd742de43e00fc4fd774355706a_0"
+  }
+ ],
+ "optionalInputMode": "gen_placeholder",
+ "optionalOutputMode": "gen_placeholder",
+ "supportSuperKernel": 1,
+ "compileInfo": {},
+ "supportInfo": {
+  "implMode": "high_performance",
+  "int64Mode": false,
+  "simplifiedKeyMode": 0,
+  "simplifiedKey": [
+   "W8a8DequantCustom/d=0,p=1/3,2/1,2/1,2/1,2",
+   "W8a8DequantCustom/d=0,p=0/3,2/1,2/1,2/1,2",
+   "W8a8DequantCustom/d=1,p=1/3,2/1,2/1,2/1,2",
+   "W8a8DequantCustom/d=1,p=0/3,2/1,2/1,2/1,2"
+  ],
+  "optionalInputMode": "gen_placeholder",
+  "optionalOutputMode": "gen_placeholder",
+  "staticKey": "dc4f6c55cca4df3136fadb772d8770023314e6a3b3fe46ca75cb3a810b52c396,bd6f49a0ab83d9aa7dc6c0058bb5df425b89a7b1702d40ab459fc3078d226c3f",
+  "inputs": [
+   {
+    "name": "acc",
+    "index": 0,
+    "dtype": "int32",
+    "format": "ND",
+    "paramType": "required",
+    "shape": [
+     -2
+    ],
+    "format_match_mode": "FormatAgnostic"
+   },
+   {
+    "name": "xScale",
+    "index": 1,
+    "dtype": "float16",
+    "format": "ND",
+    "paramType": "required",
+    "shape": [
+     -2
+    ],
+    "format_match_mode": "FormatAgnostic"
+   },
+   {
+    "name": "wScale",
+    "index": 2,
+    "dtype": "float16",
+    "format": "ND",
+    "paramType": "required",
+    "shape": [
+     -2
+    ],
+    "format_match_mode": "FormatAgnostic"
+   }
+  ],
+  "outputs": [
+   {
+    "name": "out",
+    "index": 0,
+    "dtype": "float16",
+    "format": "ND",
+    "paramType": "required",
+    "shape": [
+     -2
+    ],
+    "format_match_mode": "FormatAgnostic"
+   }
+  ],
+  "opMode": "dynamic",
+  "deterministic": "ignore"
+ },
+ "filePath": "ascend310b/w8a8_dequant_custom/W8a8DequantCustom_9b532fd742de43e00fc4fd774355706a.json"
+}

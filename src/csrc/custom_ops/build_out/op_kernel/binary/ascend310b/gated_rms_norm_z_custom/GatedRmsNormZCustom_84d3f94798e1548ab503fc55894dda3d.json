@@ -1,0 +1,102 @@
+{
+ "binFileName": "GatedRmsNormZCustom_84d3f94798e1548ab503fc55894dda3d",
+ "binFileSuffix": ".o",
+ "blockDim": -1,
+ "coreType": "VectorCore",
+ "core_type": "AIV",
+ "kernelName": "GatedRmsNormZCustom_84d3f94798e1548ab503fc55894dda3d",
+ "magic": "RT_DEV_BINARY_MAGIC_ELF",
+ "memoryStamping": [],
+ "opParaSize": 16,
+ "parameters": [
+  null,
+  null,
+  null,
+  null,
+  null
+ ],
+ "sha256": "3a20fe432a961107ac78f97a1c869caa80b2496c38a8024f25d6557b13a751d0",
+ "workspace": {
+  "num": 1,
+  "size": [
+   -1
+  ],
+  "type": [
+   0
+  ]
+ },
+ "kernelList": [
+  {
+   "kernelName": "GatedRmsNormZCustom_84d3f94798e1548ab503fc55894dda3d_0"
+  }
+ ],
+ "optionalInputMode": "gen_placeholder",
+ "optionalOutputMode": "gen_placeholder",
+ "supportSuperKernel": 1,
+ "compileInfo": {},
+ "supportInfo": {
+  "implMode": "high_performance",
+  "int64Mode": false,
+  "simplifiedKeyMode": 0,
+  "simplifiedKey": [
+   "GatedRmsNormZCustom/d=0,p=1/1,2/1,2/1,2/1,2",
+   "GatedRmsNormZCustom/d=0,p=0/1,2/1,2/1,2/1,2",
+   "GatedRmsNormZCustom/d=1,p=1/1,2/1,2/1,2/1,2",
+   "GatedRmsNormZCustom/d=1,p=0/1,2/1,2/1,2/1,2"
+  ],
+  "optionalInputMode": "gen_placeholder",
+  "optionalOutputMode": "gen_placeholder",
+  "staticKey": "0097d631691c744af37a23c6735dbba2cc47550817f183ea9b648c43517f0d22,f43dcf857ee48ae11387644d1717d8b737e9604ac48eb661601db1e572bea414",
+  "inputs": [
+   {
+    "name": "core",
+    "index": 0,
+    "dtype": "float16",
+    "format": "ND",
+    "paramType": "required",
+    "shape": [
+     -2
+    ],
+    "format_match_mode": "FormatAgnostic"
+   },
+   {
+    "name": "z_silu",
+    "index": 1,
+    "dtype": "float16",
+    "format": "ND",
+    "paramType": "required",
+    "shape": [
+     -2
+    ],
+    "format_match_mode": "FormatAgnostic"
+   },
+   {
+    "name": "gamma",
+    "index": 2,
+    "dtype": "float16",
+    "format": "ND",
+    "paramType": "required",
+    "shape": [
+     -2
+    ],
+    "format_match_mode": "FormatAgnostic"
+   }
+  ],
+  "outputs": [
+   {
+    "name": "out",
+    "index": 0,
+    "dtype": "float16",
+    "format": "ND",
+    "paramType": "required",
+    "shape": [
+     -2
+    ],
+    "format_match_mode": "FormatAgnostic"
+   }
+  ],
+  "opMode": "dynamic",
+  "deterministic": "ignore"
+ },
+ "filePath": "ascend310b/gated_rms_norm_z_custom/GatedRmsNormZCustom_84d3f94798e1548ab503fc55894dda3d.json"
+}

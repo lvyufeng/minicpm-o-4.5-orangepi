@@ -1,0 +1,60 @@
+{
+  "binList": [
+    {
+      "implMode": "high_performance",
+      "int64Mode": false,
+      "simplifiedKeyMode": 0,
+      "simplifiedKey": [
+        "W8a8QuantizeCustom/d=0,p=1/1,2/2,2/1,2",
+        "W8a8QuantizeCustom/d=0,p=0/1,2/2,2/1,2",
+        "W8a8QuantizeCustom/d=1,p=1/1,2/2,2/1,2",
+        "W8a8QuantizeCustom/d=1,p=0/1,2/2,2/1,2"
+      ],
+      "staticKey": "938da805bbff2cc8140b3eb5942f66279506d78476ddce24038eafe32b160aaa,8708976c9a72145dd37c49f59048a99c5f7ccbb0fd2134ae3a02dc082dd4c0fd",
+      "inputs": [
+        {
+          "name": "x",
+          "index": 0,
+          "dtype": "float16",
+          "format": "ND",
+          "paramType": "required",
+          "shape": [
+            -2
+          ],
+          "format_match_mode": "FormatAgnostic"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "xq",
+          "index": 0,
+          "dtype": "int8",
+          "format": "ND",
+          "paramType": "required",
+          "shape": [
+            -2
+          ],
+          "format_match_mode": "FormatAgnostic"
+        },
+        {
+          "name": "scale",
+          "index": 1,
+          "dtype": "float16",
+          "format": "ND",
+          "paramType": "required",
+          "shape": [
+            -2
+          ],
+          "format_match_mode": "FormatAgnostic"
+        }
+      ],
+      "opMode": "dynamic",
+      "optionalInputMode": "gen_placeholder",
+      "deterministic": "ignore",
+      "optionalOutputMode": "gen_placeholder",
+      "binInfo": {
+        "jsonFilePath": "ascend310b/w8a8_quantize_custom/W8a8QuantizeCustom_3e597f02638ae772a8b8bf07a6366a30.json"
+      }
+    }
+  ]
+}

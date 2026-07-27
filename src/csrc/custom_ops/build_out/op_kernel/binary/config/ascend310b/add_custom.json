@@ -1,0 +1,60 @@
+{
+  "binList": [
+    {
+      "implMode": "high_performance",
+      "int64Mode": false,
+      "simplifiedKeyMode": 0,
+      "simplifiedKey": [
+        "AddCustom/d=0,p=1/1,2/1,2/1,2",
+        "AddCustom/d=0,p=0/1,2/1,2/1,2",
+        "AddCustom/d=1,p=1/1,2/1,2/1,2",
+        "AddCustom/d=1,p=0/1,2/1,2/1,2"
+      ],
+      "staticKey": "3c0dc7616702378e8e07a3b90bc9753be35e3eedd825cb55a99aa3a5eb343cce,24db4d78a3a31c0287aa11345320c199348443901fef8fe630f68f86fd5dc348",
+      "inputs": [
+        {
+          "name": "x",
+          "index": 0,
+          "dtype": "float16",
+          "format": "ND",
+          "paramType": "required",
+          "shape": [
+            -2
+          ],
+          "format_match_mode": "FormatAgnostic"
+        },
+        {
+          "name": "y",
+          "index": 1,
+          "dtype": "float16",
+          "format": "ND",
+          "paramType": "required",
+          "shape": [
+            -2
+          ],
+          "format_match_mode": "FormatAgnostic"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "z",
+          "index": 0,
+          "dtype": "float16",
+          "format": "ND",
+          "paramType": "required",
+          "shape": [
+            -2
+          ],
+          "format_match_mode": "FormatAgnostic"
+        }
+      ],
+      "opMode": "dynamic",
+      "optionalInputMode": "gen_placeholder",
+      "deterministic": "ignore",
+      "optionalOutputMode": "gen_placeholder",
+      "binInfo": {
+        "jsonFilePath": "ascend310b/add_custom/AddCustom_ab1b6750d7f510985325b603cb06dc8b.json"
+      }
+    }
+  ]
+}

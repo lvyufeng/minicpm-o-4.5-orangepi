@@ -1,0 +1,41 @@
+file(REMOVE_RECURSE
+  "CMakeFiles/cust_op_proto.dir/__/autogen/op_proto.cc.o"
+  "CMakeFiles/cust_op_proto.dir/__/autogen/op_proto.cc.o.d"
+  "CMakeFiles/cust_op_proto.dir/add_custom.cpp.o"
+  "CMakeFiles/cust_op_proto.dir/add_custom.cpp.o.d"
+  "CMakeFiles/cust_op_proto.dir/attention_step_custom.cpp.o"
+  "CMakeFiles/cust_op_proto.dir/attention_step_custom.cpp.o.d"
+  "CMakeFiles/cust_op_proto.dir/gated_rms_norm_z_custom.cpp.o"
+  "CMakeFiles/cust_op_proto.dir/gated_rms_norm_z_custom.cpp.o.d"
+  "CMakeFiles/cust_op_proto.dir/linear_causal_conv_custom.cpp.o"
+  "CMakeFiles/cust_op_proto.dir/linear_causal_conv_custom.cpp.o.d"
+  "CMakeFiles/cust_op_proto.dir/linear_causal_conv_step_custom.cpp.o"
+  "CMakeFiles/cust_op_proto.dir/linear_causal_conv_step_custom.cpp.o.d"
+  "CMakeFiles/cust_op_proto.dir/linear_gated_delta_rule_custom.cpp.o"
+  "CMakeFiles/cust_op_proto.dir/linear_gated_delta_rule_custom.cpp.o.d"
+  "CMakeFiles/cust_op_proto.dir/linear_gated_delta_rule_step_custom.cpp.o"
+  "CMakeFiles/cust_op_proto.dir/linear_gated_delta_rule_step_custom.cpp.o.d"
+  "CMakeFiles/cust_op_proto.dir/matmul_cube_custom.cpp.o"
+  "CMakeFiles/cust_op_proto.dir/matmul_cube_custom.cpp.o.d"
+  "CMakeFiles/cust_op_proto.dir/matmul_vec_custom.cpp.o"
+  "CMakeFiles/cust_op_proto.dir/matmul_vec_custom.cpp.o.d"
+  "CMakeFiles/cust_op_proto.dir/matmul_w4a16_custom.cpp.o"
+  "CMakeFiles/cust_op_proto.dir/matmul_w4a16_custom.cpp.o.d"
+  "CMakeFiles/cust_op_proto.dir/matmul_w8a8_i32_custom.cpp.o"
+  "CMakeFiles/cust_op_proto.dir/matmul_w8a8_i32_custom.cpp.o.d"
+  "CMakeFiles/cust_op_proto.dir/rms_norm1024_custom.cpp.o"
+  "CMakeFiles/cust_op_proto.dir/rms_norm1024_custom.cpp.o.d"
+  "CMakeFiles/cust_op_proto.dir/silu_mul_custom.cpp.o"
+  "CMakeFiles/cust_op_proto.dir/silu_mul_custom.cpp.o.d"
+  "CMakeFiles/cust_op_proto.dir/w8a8_dequant_custom.cpp.o"
+  "CMakeFiles/cust_op_proto.dir/w8a8_dequant_custom.cpp.o.d"
+  "CMakeFiles/cust_op_proto.dir/w8a8_quantize_custom.cpp.o"
+  "CMakeFiles/cust_op_proto.dir/w8a8_quantize_custom.cpp.o.d"
+  "libcust_opsproto_rt2.0.pdb"
+  "libcust_opsproto_rt2.0.so"
+)
+
+# Per-language clean rules from dependency scanning.
+foreach(lang CXX)
+  include(CMakeFiles/cust_op_proto.dir/cmake_clean_${lang}.cmake OPTIONAL)
+endforeach()

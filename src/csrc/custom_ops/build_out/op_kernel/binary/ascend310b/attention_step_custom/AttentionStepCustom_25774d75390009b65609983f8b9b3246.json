@@ -1,0 +1,124 @@
+{
+ "binFileName": "AttentionStepCustom_25774d75390009b65609983f8b9b3246",
+ "binFileSuffix": ".o",
+ "blockDim": -1,
+ "coreType": "VectorCore",
+ "core_type": "AIV",
+ "kernelName": "AttentionStepCustom_25774d75390009b65609983f8b9b3246",
+ "magic": "RT_DEV_BINARY_MAGIC_ELF",
+ "memoryStamping": [],
+ "opParaSize": 32,
+ "parameters": [
+  null,
+  null,
+  null,
+  null,
+  null
+ ],
+ "sha256": "6ff08867d48fe17f8715482fb96732aba98a8f06c595e725bbed83f6286912f6",
+ "workspace": {
+  "num": 1,
+  "size": [
+   -1
+  ],
+  "type": [
+   0
+  ]
+ },
+ "kernelList": [
+  {
+   "kernelName": "AttentionStepCustom_25774d75390009b65609983f8b9b3246_0"
+  }
+ ],
+ "optionalInputMode": "gen_placeholder",
+ "optionalOutputMode": "gen_placeholder",
+ "supportSuperKernel": 1,
+ "compileInfo": {},
+ "supportInfo": {
+  "implMode": "high_performance",
+  "int64Mode": false,
+  "simplifiedKeyMode": 0,
+  "simplifiedKey": [
+   "AttentionStepCustom/d=0,p=1/1,2/1,2/1,2/1,2",
+   "AttentionStepCustom/d=0,p=0/1,2/1,2/1,2/1,2",
+   "AttentionStepCustom/d=1,p=1/1,2/1,2/1,2/1,2",
+   "AttentionStepCustom/d=1,p=0/1,2/1,2/1,2/1,2"
+  ],
+  "optionalInputMode": "gen_placeholder",
+  "optionalOutputMode": "gen_placeholder",
+  "staticKey": "e7d94e50ef5f904a28fa83275a2a0f39683df3a2b04cdd39c900b7a5521b7b81,04654efefd6f046b869671d653f918787042171b617616fe6eda8b4b95068287",
+  "inputs": [
+   {
+    "name": "query",
+    "index": 0,
+    "dtype": "float16",
+    "format": "ND",
+    "paramType": "required",
+    "shape": [
+     -2
+    ],
+    "format_match_mode": "FormatAgnostic"
+   },
+   {
+    "name": "k_cache",
+    "index": 1,
+    "dtype": "float16",
+    "format": "ND",
+    "paramType": "required",
+    "shape": [
+     -2
+    ],
+    "format_match_mode": "FormatAgnostic"
+   },
+   {
+    "name": "v_cache",
+    "index": 2,
+    "dtype": "float16",
+    "format": "ND",
+    "paramType": "required",
+    "shape": [
+     -2
+    ],
+    "format_match_mode": "FormatAgnostic"
+   }
+  ],
+  "outputs": [
+   {
+    "name": "out",
+    "index": 0,
+    "dtype": "float16",
+    "format": "ND",
+    "paramType": "required",
+    "shape": [
+     -2
+    ],
+    "format_match_mode": "FormatAgnostic"
+   }
+  ],
+  "attrs": [
+   {
+    "name": "context",
+    "dtype": "int",
+    "value": 0
+   },
+   {
+    "name": "num_q_heads",
+    "dtype": "int",
+    "value": 0
+   },
+   {
+    "name": "num_kv_heads",
+    "dtype": "int",
+    "value": 0
+   },
+   {
+    "name": "scale",
+    "dtype": "float",
+    "value": 0.0
+   }
+  ],
+  "opMode": "dynamic",
+  "deterministic": "ignore"
+ },
+ "filePath": "ascend310b/attention_step_custom/AttentionStepCustom_25774d75390009b65609983f8b9b3246.json"
+}

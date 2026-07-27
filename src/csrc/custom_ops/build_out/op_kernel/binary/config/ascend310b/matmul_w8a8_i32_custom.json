@@ -1,0 +1,60 @@
+{
+  "binList": [
+    {
+      "implMode": "high_performance",
+      "int64Mode": false,
+      "simplifiedKeyMode": 0,
+      "simplifiedKey": [
+        "MatmulW8a8I32Custom/d=0,p=1/2,2/2,2/3,2",
+        "MatmulW8a8I32Custom/d=0,p=0/2,2/2,2/3,2",
+        "MatmulW8a8I32Custom/d=1,p=1/2,2/2,2/3,2",
+        "MatmulW8a8I32Custom/d=1,p=0/2,2/2,2/3,2"
+      ],
+      "staticKey": "70bd3adbee1c568e48c3ce78479c7f317609e17880740ee521f6ce76173ba775,ecd91a22e17dfaa57a32e66f53ec4e81ac8dc1cb398b0dc5fb8fbc4448d8f743",
+      "inputs": [
+        {
+          "name": "x",
+          "index": 0,
+          "dtype": "int8",
+          "format": "ND",
+          "paramType": "required",
+          "shape": [
+            -2
+          ],
+          "format_match_mode": "FormatAgnostic"
+        },
+        {
+          "name": "w",
+          "index": 1,
+          "dtype": "int8",
+          "format": "ND",
+          "paramType": "required",
+          "shape": [
+            -2
+          ],
+          "format_match_mode": "FormatAgnostic"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "out",
+          "index": 0,
+          "dtype": "int32",
+          "format": "ND",
+          "paramType": "required",
+          "shape": [
+            -2
+          ],
+          "format_match_mode": "FormatAgnostic"
+        }
+      ],
+      "opMode": "dynamic",
+      "optionalInputMode": "gen_placeholder",
+      "deterministic": "ignore",
+      "optionalOutputMode": "gen_placeholder",
+      "binInfo": {
+        "jsonFilePath": "ascend310b/matmul_w8a8_i32_custom/MatmulW8a8I32Custom_0eba77ac1e8999161840aeb633679d61.json"
+      }
+    }
+  ]
+}
