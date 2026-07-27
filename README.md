@@ -105,13 +105,15 @@ curl -X PUT http://127.0.0.1:8007/internal/workers/local-worker \
 ### 测试
 
 ```bash
-# 健康检查
-curl http://127.0.0.1:22500/health  # backend
-curl http://127.0.0.1:22400/health  # worker
-curl http://127.0.0.1:8006/health   # gateway
+# 启动 backend_server
+./build/backend_server --model-path ./models/MiniCPM-o-4.5 --port 50051
 
-# 端到端测试
-python tests/e2e_realtime.py
+# 运行基础推理测试（单独终端）
+python examples/test_single_token.py   # 单 token 生成
+python examples/test_generation.py     # 多 token 生成
+
+# 完整流程测试
+python examples/test_tokenizer.py
 ```
 
 ## 开发路线
@@ -120,12 +122,13 @@ python tests/e2e_realtime.py
 - [x] C++ 推理引擎核心代码移植
   - [x] ACL 上下文管理
   - [x] Tensor 抽象层
-  - [x] Weights 索引和加载
+  - [x] Weights 索引和加载（流式加载优化，避免统一内存双份拷贝）
   - [x] 算子封装 (ops.cpp)
   - [x] Vision Encoder (SigLIP)
   - [x] Audio Encoder/Decoder (Whisper + TTS)
-  - [x] Language Model (Qwen2 + Linear Attention)
-  - [x] Decoder Layer (Full/Linear Attention)
+  - [x] Language Model (Qwen2)
+  - [x] Decoder Layer（支持标准注意力和门控注意力）
+  - [x] 文本生成流水线（prefill + decode + lm_head + greedy sampling）
 - [x] 自定义 AscendC 算子实现
   - [x] RmsNorm1024Custom
   - [x] MatmulCubeCustom (M=1 快速路径)
@@ -139,13 +142,23 @@ python tests/e2e_realtime.py
   - [x] OrangePiBackend 实现
   - [x] Backend Factory
   - [x] 兼容 MiniCPM-o-Demo 接口
-- [ ] C++ backend_server 协议层完善
-  - [ ] TCP/WebSocket 协议处理
-  - [ ] init/push/pull 原语实现
-  - [ ] Session 管理
+- [x] C++ backend_server 协议层
+  - [x] TCP 协议处理（JSON over length-prefixed frames）
+  - [x] init/chat_prefill/chat_generate 实现
+  - [x] Session 管理
+  - [x] 参数解析（max_new_tokens 等）
+- [x] 端到端推理验证
+  - [x] 模型加载测试
+  - [x] Prefill 测试
+  - [x] 单 token 生成测试
+  - [x] 多 token 生成测试（5 tokens）
+- [ ] 性能优化
+  - [ ] 注意力优化（当前使用低效的per-head fallback实现，需探索Ascend 310B支持的加速方案）
+  - [ ] 流式生成支持
+  - [ ] 权重量化优化 (W4A16/W8A8 策略调优)
+  - [ ] 性能 benchmark 和 profiling
 - [ ] Worker/Gateway 集成测试
-- [ ] 权重量化优化 (W4A16/W8A8 策略调优)
-- [ ] 性能 benchmark 和优化
+- [ ] 完整多模态功能（图像、音频输入）
 
 ## 性能目标
 
