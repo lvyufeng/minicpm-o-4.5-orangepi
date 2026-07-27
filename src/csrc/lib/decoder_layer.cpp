@@ -58,7 +58,7 @@ void copy_col_block(const Tensor& src, int64_t col_offset, Tensor& dst, aclrtStr
                                    block_bytes, ACL_MEMCPY_DEVICE_TO_DEVICE, stream),
                   "copy_col_block");
     }
-    check_acl(aclrtSynchronizeStream(stream), "copy_col_block sync");
+    // Remove sync - let operations queue asynchronously
 }
 
 void copy_head_to_seq(const Tensor& src_heads, int64_t head, int64_t heads_per_token,
@@ -75,7 +75,7 @@ void copy_head_to_seq(const Tensor& src_heads, int64_t head, int64_t heads_per_t
                                    ACL_MEMCPY_DEVICE_TO_DEVICE, stream),
                   "copy_head_to_seq");
     }
-    check_acl(aclrtSynchronizeStream(stream), "copy_head_to_seq sync");
+    // Remove sync - let operations queue asynchronously
 }
 
 void copy_seq_to_head_block(const Tensor& src_seq, Tensor& dst, int64_t col_offset,
@@ -95,7 +95,7 @@ void copy_seq_to_head_block(const Tensor& src_seq, Tensor& dst, int64_t col_offs
                                    src_row_bytes, ACL_MEMCPY_DEVICE_TO_DEVICE, stream),
                   "copy_seq_to_head_block");
     }
-    check_acl(aclrtSynchronizeStream(stream), "copy_seq_to_head_block sync");
+    // Remove sync - let operations queue asynchronously
 }
 
 void copy_heads_from_cols(const Tensor& src, int64_t heads, int64_t head_dim,
@@ -488,6 +488,8 @@ void run_full_attention_core(const Tensor& hidden,
         matmul(probs, v_seq, ctx_seq, stream);
         copy_seq_to_head_block(ctx_seq, attn_out, qh * HeadDim, stream);
     }
+    // Single sync after all heads complete
+    check_acl(aclrtSynchronizeStream(stream), "attention loop complete");
 
     Tensor attn_proj({T, Hidden}, DType::Float16); attn_proj.allocate();
     if (use_gated_attn) {
