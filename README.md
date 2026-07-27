@@ -160,15 +160,22 @@ python examples/test_tokenizer.py
 - [ ] Worker/Gateway 集成测试
 - [ ] 完整多模态功能（图像、音频输入）
 
-## 性能目标
+## 性能状态
 
-基于 minicpm-v-4.6 的经验:
+当前性能（4-token prefill + 5-token generation）:
 
-| 阶段 | 目标 |
-|------|------|
-| 基础实现 | ~3 tokens/s (aclnnMm baseline) |
-| Cube 优化 | ~5 tokens/s (自定义 matmul) |
-| 权重量化 | ~10+ tokens/s (INT8/INT4) |
+| 优化阶段 | 耗时 | 提升 | 说明 |
+|---------|------|------|------|
+| 基础实现 | 207s | - | Per-head attention with sync copies |
+| 异步拷贝优化 | 147s | 29% | Removed 128 sync points in attention loop |
+
+下一步优化方向:
+- [ ] 批量化 attention 计算（当前仍是32个头串行处理）
+- [ ] 自定义 Cube matmul 算子
+- [ ] 权重量化 (W4A16/W8A8)
+- [ ] 流式生成支持
+
+> 注：`aclnnPromptFlashAttention` 在 Ascend 310B 上测试返回错误码 561103，暂不可用；已尝试用 `batch_matmul` 批量化 32 个头但重组张量的开销抵消了收益，需要更优的数据布局方案。
 
 ## License
 
