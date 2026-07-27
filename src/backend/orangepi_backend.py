@@ -45,6 +45,17 @@ class OrangePiBackend:
         self._socket: Optional[socket.socket] = None
         self._next_request_id = 0
 
+        # Load tokenizer
+        try:
+            from transformers import AutoTokenizer
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                model_path, trust_remote_code=True
+            )
+            logger.info(f"[NPU {gpu_id}] Loaded tokenizer from {model_path}")
+        except Exception as e:
+            logger.warning(f"[NPU {gpu_id}] Failed to load tokenizer: {e}")
+            self.tokenizer = None
+
     def load_model(self) -> None:
         """Load model (connect to backend server)"""
         self.status = "loading"
@@ -131,14 +142,26 @@ class OrangePiBackend:
         enable_thinking: bool = False,
     ) -> str:
         """Prefill chat context."""
+        if self.tokenizer is None:
+            raise RuntimeError("Tokenizer not loaded")
+
+        # Format messages into text prompt
+        # Simple concatenation - in production should use apply_chat_template
+        prompt_text = ""
+        for msg in msgs:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            prompt_text += f"{role}: {content}\n"
+
+        # Tokenize
+        input_ids = self.tokenizer.encode(prompt_text, add_special_tokens=True)
+        logger.info(f"[NPU {self.gpu_id}] Tokenized {len(input_ids)} tokens")
+
+        # Send to backend with token IDs
         response = self._send_request({
             "type": "chat_prefill",
             "session_id": session_id,
-            "msgs": msgs,
-            "omni_mode": omni_mode,
-            "max_slice_nums": max_slice_nums,
-            "use_tts_template": use_tts_template,
-            "enable_thinking": enable_thinking,
+            "input_ids": input_ids,
         })
 
         if response.get("status") != "ok":
@@ -170,6 +193,9 @@ class OrangePiBackend:
         length_penalty: float = 1.1,
     ) -> Iterator[Any]:
         """Stream chat generation chunks."""
+        if self.tokenizer is None:
+            raise RuntimeError("Tokenizer not loaded")
+
         response = self._send_request({
             "type": "chat_streaming_generate",
             "session_id": session_id,
@@ -191,6 +217,24 @@ class OrangePiBackend:
             if chunk_response.get("status") != "ok":
                 logger.warning(f"Chunk error: {chunk_response.get('error')}")
                 break
+
+            chunk = chunk_response.get("chunk", {})
+            token_id = chunk.get("token_id")
+            is_eos = chunk.get("is_eos", False)
+
+            if token_id is not None:
+                # Decode token to text
+                token_text = self.tokenizer.decode([int(token_id)], skip_special_tokens=False)
+
+                # Yield chunk with decoded text
+                yield {
+                    "text": token_text,
+                    "token_id": int(token_id),
+                    "is_eos": is_eos,
+                }
+
+                if is_eos:
+                    break
 
             yield self._deserialize_chunk(chunk_response.get("chunk"))
 

@@ -19,6 +19,7 @@
 #include "minicpmo/audio_encoder.h"
 #include "minicpmo/decoder_layer.h"
 #include "minicpmo/language_model.h"
+#include "minicpmo/ops.h"
 #include "minicpmo/vision.h"
 #include "minicpmo/weights.h"
 
@@ -40,11 +41,12 @@
 namespace json {
 
 struct Value {
-    enum Type { Object, String, Number, Boolean, Null } type;
+    enum Type { Object, Array, String, Number, Boolean, Null } type;
     std::string str_val;
     double num_val;
     bool bool_val;
     std::map<std::string, Value> obj_val;
+    std::vector<Value> arr_val;
 
     Value() : type(Null) {}
     explicit Value(const std::string& s) : type(String), str_val(s) {}
@@ -53,6 +55,7 @@ struct Value {
     explicit Value(bool b) : type(Boolean), bool_val(b) {}
 
     static Value object() { Value v; v.type = Object; return v; }
+    static Value array() { Value v; v.type = Array; return v; }
 
     Value& operator[](const std::string& key) {
         if (type != Object) type = Object;
@@ -65,6 +68,16 @@ struct Value {
     int as_int() const { return static_cast<int>(num_val); }
     double as_double() const { return num_val; }
     bool as_bool() const { return bool_val; }
+
+    std::vector<int32_t> as_int_array() const {
+        std::vector<int32_t> result;
+        if (type == Array) {
+            for (const auto& v : arr_val) {
+                result.push_back(v.as_int());
+            }
+        }
+        return result;
+    }
 };
 
 // Minimal JSON serializer
@@ -80,6 +93,15 @@ std::string dumps(const Value& v) {
             oss << dumps(kv.second);
         }
         oss << "}";
+    } else if (v.type == Value::Array) {
+        oss << "[";
+        bool first = true;
+        for (const auto& elem : v.arr_val) {
+            if (!first) oss << ",";
+            first = false;
+            oss << dumps(elem);
+        }
+        oss << "]";
     } else if (v.type == Value::String) {
         oss << "\"" << v.str_val << "\"";
     } else if (v.type == Value::Number) {
@@ -115,11 +137,46 @@ Value loads(const std::string& text) {
         return false;
     };
 
+    // Helper to extract integer array for a given key
+    auto extract_int_array = [&](const std::string& key) -> bool {
+        std::string pattern = "\"" + key + "\"";
+        size_t pos = text.find(pattern);
+        if (pos != std::string::npos) {
+            size_t arr_start = text.find("[", pos);
+            if (arr_start != std::string::npos) {
+                size_t arr_end = text.find("]", arr_start);
+                if (arr_end != std::string::npos) {
+                    Value arr = Value::array();
+                    std::string arr_content = text.substr(arr_start + 1, arr_end - arr_start - 1);
+
+                    // Simple comma-split parser
+                    std::istringstream iss(arr_content);
+                    std::string token;
+                    while (std::getline(iss, token, ',')) {
+                        // Trim whitespace
+                        size_t first = token.find_first_not_of(" \t\n\r");
+                        size_t last = token.find_last_not_of(" \t\n\r");
+                        if (first != std::string::npos && last != std::string::npos) {
+                            token = token.substr(first, last - first + 1);
+                            if (!token.empty()) {
+                                arr.arr_val.push_back(Value(std::stod(token)));
+                            }
+                        }
+                    }
+                    root[key] = arr;
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+
     // Extract common fields
     extract_string("type");
     extract_string("model_path");
     extract_string("session_id");
     extract_string("method");
+    extract_int_array("input_ids");
 
     // For backward compatibility, also check "method" field
     if (!root.contains("type") && root.contains("method")) {
@@ -184,10 +241,64 @@ public:
             throw std::runtime_error("Model not loaded");
         }
 
-        // TODO: Parse input (text, images, audio) from params
-        // For now just return dummy response
+        // Extract input_ids array from params
+        if (!params.contains("input_ids")) {
+            throw std::runtime_error("Missing input_ids in chat_prefill request");
+        }
+
+        std::vector<int32_t> input_ids = params.at("input_ids").as_int_array();
+        if (input_ids.empty()) {
+            throw std::runtime_error("Empty input_ids");
+        }
+
+        int64_t seq_len = input_ids.size();
+        std::cout << "[Session] Prefilling " << seq_len << " tokens" << std::endl;
+
+        // Create embedding tensor [seq_len, hidden_size]
+        Tensor prompt_hidden({seq_len, lm_cfg_.hidden_size}, DType::Float16);
+        prompt_hidden.allocate();
+
+        // Lookup embeddings for each token
+        for (int64_t i = 0; i < seq_len; i++) {
+            std::vector<int32_t> single_id = {input_ids[i]};
+            Tensor single_emb({1, lm_cfg_.hidden_size}, DType::Float16);
+            single_emb.allocate();
+
+            embedding_lookup(lm_weights_.embed, single_id, single_emb, ctx_->stream());
+
+            // Copy to prompt_hidden[i, :]
+            int64_t offset = i * lm_cfg_.hidden_size * sizeof(uint16_t);
+            aclrtMemcpyAsync(
+                static_cast<char*>(prompt_hidden.data()) + offset,
+                lm_cfg_.hidden_size * sizeof(uint16_t),
+                single_emb.data(),
+                lm_cfg_.hidden_size * sizeof(uint16_t),
+                ACL_MEMCPY_DEVICE_TO_DEVICE,
+                ctx_->stream()
+            );
+        }
+
+        aclrtSynchronizeStream(ctx_->stream());
+
+        // Run prefill
+        last_hidden_ = prefill_from_embeddings(
+            prompt_hidden,
+            lm_weights_,
+            lm_cfg_,
+            cos_table_,
+            sin_table_,
+            *decode_state_,
+            ctx_->stream()
+        );
+
+        aclrtSynchronizeStream(ctx_->stream());
+        prefill_done_ = true;
+
+        std::cout << "[Session] Prefill complete, seq_len=" << decode_state_->seq_len << std::endl;
+
         json::Value result = json::Value::object();
-        result["prompt"] = json::Value("User prompt processed");
+        result["prompt"] = json::Value("Prefill complete");
+        result["num_tokens"] = json::Value(static_cast<double>(seq_len));
         return result;
     }
 
@@ -195,12 +306,75 @@ public:
         if (!model_loaded_) {
             throw std::runtime_error("Model not loaded");
         }
+        if (!prefill_done_) {
+            throw std::runtime_error("Must call chat_prefill before chat_generate");
+        }
 
-        // TODO: Implement actual generation
-        // For now just return dummy response
+        // Extract parameters
+        int max_new_tokens = 256;
+        if (params.contains("max_new_tokens")) {
+            max_new_tokens = params.at("max_new_tokens").as_int();
+        }
+
+        std::cout << "[Session] Generating up to " << max_new_tokens << " tokens" << std::endl;
+
+        // Clear streaming state
+        stream_chunks_.clear();
+
+        // Get first token from last_hidden using lm_head
+        int64_t prev_token = lm_head_greedy(
+            last_hidden_,
+            lm_weights_,
+            lm_cfg_,
+            ctx_->stream()
+        );
+
+        std::vector<int32_t> generated_ids;
+        generated_ids.push_back(static_cast<int32_t>(prev_token));
+        const int32_t eos_token_id = 151643;  // MiniCPM-O EOS token
+
+        // Check if first token is EOS
+        if (prev_token == eos_token_id) {
+            std::cout << "[Session] EOS token generated immediately" << std::endl;
+        } else {
+            // Generate remaining tokens
+            for (int i = 1; i < max_new_tokens; i++) {
+                int64_t next_token = decode_step_greedy(
+                    prev_token,
+                    lm_weights_,
+                    lm_cfg_,
+                    cos_table_,
+                    sin_table_,
+                    *decode_state_,
+                    ctx_->stream()
+                );
+
+                generated_ids.push_back(static_cast<int32_t>(next_token));
+
+                // Check for EOS
+                if (next_token == eos_token_id) {
+                    std::cout << "[Session] EOS token generated at position " << i << std::endl;
+                    break;
+                }
+
+                prev_token = next_token;
+            }
+        }
+
+        aclrtSynchronizeStream(ctx_->stream());
+        prefill_done_ = false;  // Reset for next turn
+
         json::Value result = json::Value::object();
-        result["text"] = json::Value("Hello from MiniCPM-O!");
         result["finished"] = json::Value(true);
+        result["num_generated"] = json::Value(static_cast<double>(generated_ids.size()));
+
+        // Return token IDs array for Python-side detokenization
+        json::Value ids_array = json::Value::array();
+        for (int32_t id : generated_ids) {
+            ids_array.arr_val.push_back(json::Value(static_cast<double>(id)));
+        }
+        result["token_ids"] = ids_array;
+
         return result;
     }
 
@@ -208,22 +382,74 @@ public:
         if (!model_loaded_) {
             throw std::runtime_error("Model not loaded");
         }
+        if (!prefill_done_) {
+            throw std::runtime_error("Must call chat_prefill before chat_streaming_generate");
+        }
+
+        // Extract parameters
+        int max_new_tokens = 256;
+        if (params.contains("max_new_tokens")) {
+            max_new_tokens = params.at("max_new_tokens").as_int();
+        }
+
+        std::cout << "[Session] Starting streaming generation, max_tokens=" << max_new_tokens << std::endl;
 
         // Initialize streaming state
         streaming_active_ = true;
         stream_chunks_.clear();
 
-        // TODO: Start actual streaming generation
-        // For now, prepare dummy chunks
-        json::Value chunk1 = json::Value::object();
-        chunk1["text"] = json::Value("Hello ");
-        stream_chunks_.push_back(chunk1);
+        // Get first token from last_hidden using lm_head
+        int64_t prev_token = lm_head_greedy(
+            last_hidden_,
+            lm_weights_,
+            lm_cfg_,
+            ctx_->stream()
+        );
 
-        json::Value chunk2 = json::Value::object();
-        chunk2["text"] = json::Value("from MiniCPM-O!");
-        stream_chunks_.push_back(chunk2);
+        // Store first chunk
+        const int32_t eos_token_id = 151643;
+        json::Value chunk = json::Value::object();
+        chunk["token_id"] = json::Value(static_cast<double>(prev_token));
+        chunk["is_eos"] = json::Value(prev_token == eos_token_id);
+        stream_chunks_.push_back(chunk);
 
-        return json::Value::object();
+        // Check if first token is EOS
+        if (prev_token != eos_token_id) {
+            // Generate remaining tokens
+            for (int i = 1; i < max_new_tokens; i++) {
+                int64_t next_token = decode_step_greedy(
+                    prev_token,
+                    lm_weights_,
+                    lm_cfg_,
+                    cos_table_,
+                    sin_table_,
+                    *decode_state_,
+                    ctx_->stream()
+                );
+
+                // Store chunk
+                json::Value chunk = json::Value::object();
+                chunk["token_id"] = json::Value(static_cast<double>(next_token));
+                chunk["is_eos"] = json::Value(next_token == eos_token_id);
+                stream_chunks_.push_back(chunk);
+
+                if (next_token == eos_token_id) {
+                    std::cout << "[Session] EOS token generated at position " << i << std::endl;
+                    break;
+                }
+
+                prev_token = next_token;
+            }
+        }
+
+        aclrtSynchronizeStream(ctx_->stream());
+        streaming_active_ = false;
+        prefill_done_ = false;  // Reset for next turn
+
+        json::Value result = json::Value::object();
+        result["status"] = json::Value("streaming_ready");
+        result["num_chunks"] = json::Value(static_cast<double>(stream_chunks_.size()));
+        return result;
     }
 
     json::Value get_next_chunk() {
@@ -263,6 +489,10 @@ private:
     Tensor cos_table_;
     Tensor sin_table_;
     std::unique_ptr<DecodeState> decode_state_;
+
+    // Generation state
+    Tensor last_hidden_;  // [1, hidden_size] from prefill
+    bool prefill_done_{false};
 
     bool model_loaded_{false};
     bool streaming_active_{false};
