@@ -1,0 +1,40 @@
+# Build artifacts
+build/
+custom_opp_install/
+*.o
+*.so
+*.a
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Models
+models/
+*.safetensors
+*.bin
+*.gguf
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# System
+.DS_Store
+Thumbs.db
+
+# Temporary files
+/tmp/
+*.tmp
