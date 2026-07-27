@@ -171,12 +171,37 @@ Value loads(const std::string& text) {
         return false;
     };
 
+    // Helper to extract numeric value for a given key
+    auto extract_number = [&](const std::string& key) -> bool {
+        std::string pattern = "\"" + key + "\":";
+        size_t pos = text.find(pattern);
+        if (pos != std::string::npos) {
+            size_t start = pos + pattern.length();
+            // Skip whitespace
+            while (start < text.length() && std::isspace(text[start])) ++start;
+            // Extract number
+            size_t end = start;
+            while (end < text.length() && (std::isdigit(text[end]) || text[end] == '.' || text[end] == '-')) {
+                ++end;
+            }
+            if (end > start) {
+                std::string num_str = text.substr(start, end - start);
+                root[key] = Value(std::stod(num_str));
+                return true;
+            }
+        }
+        return false;
+    };
+
     // Extract common fields
     extract_string("type");
     extract_string("model_path");
     extract_string("session_id");
     extract_string("method");
     extract_int_array("input_ids");
+    extract_number("max_new_tokens");
+    extract_number("length_penalty");
+    extract_number("request_id");
 
     // For backward compatibility, also check "method" field
     if (!root.contains("type") && root.contains("method")) {
@@ -209,6 +234,9 @@ public:
         // Load model weights
         lm_weights_ = load_language_model_weights(*weights_index_, lm_cfg_);
         vision_weights_ = load_vision_weights(*weights_index_, vision_cfg_);
+
+        // Release shard file memory (unified memory on Orange Pi 310B)
+        weights_index_->release_shard_memory();
 
         // Build RoPE tables
         const int64_t max_seq = 4096;
@@ -588,8 +616,18 @@ private:
 
             // Send response with length prefix
             uint32_t response_len = response.size();
-            send(client_fd, &response_len, 4, 0);
-            send(client_fd, response.c_str(), response_len, 0);
+            std::cout << "[Server] Sending response (" << response_len << " bytes)..." << std::endl;
+            ssize_t sent1 = send(client_fd, &response_len, 4, MSG_NOSIGNAL);
+            if (sent1 < 0) {
+                std::cerr << "[Server] Failed to send response header: " << strerror(errno) << std::endl;
+                break;
+            }
+            ssize_t sent2 = send(client_fd, response.c_str(), response_len, MSG_NOSIGNAL);
+            if (sent2 < 0) {
+                std::cerr << "[Server] Failed to send response body: " << strerror(errno) << std::endl;
+                break;
+            }
+            std::cout << "[Server] Response sent (header: " << sent1 << " bytes, body: " << sent2 << " bytes)" << std::endl;
         }
 
         close(client_fd);
@@ -598,17 +636,22 @@ private:
 
     std::string process_request(BackendSession& session, const std::string& request) {
         try {
+            std::cout << "[Server] Received request: " << request.substr(0, 100) << "..." << std::endl;
             json::Value req = json::loads(request);
+            std::cout << "[Server] JSON parsed successfully" << std::endl;
             std::string type = req["type"].as_string();
 
-            std::cout << "[Server] Request: " << type << std::endl;
+            std::cout << "[Server] Request type: " << type << std::endl;
 
             json::Value response = json::Value::object();
 
             if (type == "init") {
                 std::string model_path = req["model_path"].as_string();
+                std::cout << "[Server] Loading model from: " << model_path << std::endl;
                 session.load_model(model_path);
+                std::cout << "[Server] Model loaded, preparing response" << std::endl;
                 response["status"] = json::Value("ok");
+                std::cout << "[Server] Response prepared" << std::endl;
             } else if (type == "chat_prefill") {
                 json::Value result = session.chat_prefill(req);
                 response["status"] = json::Value("ok");
@@ -637,9 +680,13 @@ private:
                 response["error"] = json::Value("Unknown request type: " + type);
             }
 
-            return json::dumps(response);
+            std::cout << "[Server] Serializing response..." << std::endl;
+            std::string response_str = json::dumps(response);
+            std::cout << "[Server] Response: " << response_str << std::endl;
+            return response_str;
 
         } catch (const std::exception& e) {
+            std::cerr << "[Server] Exception in process_request: " << e.what() << std::endl;
             json::Value response = json::Value::object();
             response["status"] = json::Value("error");
             response["error"] = json::Value(std::string(e.what()));

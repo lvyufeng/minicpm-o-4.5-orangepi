@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -297,7 +298,17 @@ void run_full_attention_core(const Tensor& hidden,
     const int64_t HeadDim = config.head_dim;
     const int64_t QMainDim = NumQHeads * HeadDim;
     const int64_t KVDim = NumKVHeads * HeadDim;
-    const int64_t QProjOut = QMainDim * 2;
+
+    // Detect if the model uses gated attention by checking q_proj shape
+    const auto& q_shape = weights.q_proj_weight->shape();
+    int64_t q_proj_out = 0;
+    if (q_shape.size() == 2) {
+        if (q_shape[1] == Hidden) q_proj_out = q_shape[0];
+        else if (q_shape[0] == Hidden) q_proj_out = q_shape[1];
+    }
+    const bool use_gated_attn = (q_proj_out == QMainDim * 2);
+    const int64_t QProjOut = use_gated_attn ? (QMainDim * 2) : QMainDim;
+
     const int64_t Intermediate = [&]{
         const auto& s = weights.gate_proj_weight->shape();
         if (s.size() == 2) {
@@ -307,19 +318,52 @@ void run_full_attention_core(const Tensor& hidden,
         return s[0];
     }();
 
-    if (weights.input_norm_weight->shape() != std::vector<int64_t>{Hidden} ||
-        weights.post_attention_norm_weight->shape() != std::vector<int64_t>{Hidden} ||
-        !matmul_shape_ok(weights.q_proj_weight, QProjOut, Hidden) ||
-        !matmul_shape_ok(weights.k_proj_weight, KVDim, Hidden) ||
-        !matmul_shape_ok(weights.v_proj_weight, KVDim, Hidden) ||
-        !matmul_shape_ok(weights.o_proj_weight, Hidden, QMainDim) ||
-        weights.q_norm_weight->shape() != std::vector<int64_t>{HeadDim} ||
-        weights.k_norm_weight->shape() != std::vector<int64_t>{HeadDim} ||
-        !matmul_shape_ok(weights.gate_proj_weight, Intermediate, Hidden) ||
-        !matmul_shape_ok(weights.up_proj_weight, Intermediate, Hidden) ||
-        !matmul_shape_ok(weights.down_proj_weight, Hidden, Intermediate)) {
-        throw std::runtime_error("decoder layer weight shape mismatch");
-    }
+    auto check_shape = [&](const char* name, const Tensor* t, const std::vector<int64_t>& expected) {
+        if (t->shape() != expected) {
+            std::ostringstream oss;
+            oss << "decoder layer weight shape mismatch: " << name << " expected [";
+            for (size_t i = 0; i < expected.size(); ++i) {
+                if (i > 0) oss << ", ";
+                oss << expected[i];
+            }
+            oss << "], got [";
+            for (size_t i = 0; i < t->shape().size(); ++i) {
+                if (i > 0) oss << ", ";
+                oss << t->shape()[i];
+            }
+            oss << "]";
+            throw std::runtime_error(oss.str());
+        }
+    };
+
+    check_shape("input_norm_weight", weights.input_norm_weight, {Hidden});
+    check_shape("post_attention_norm_weight", weights.post_attention_norm_weight, {Hidden});
+
+    auto check_matmul = [&](const char* name, const Tensor* t, int64_t N, int64_t K) {
+        if (!matmul_shape_ok(t, N, K)) {
+            std::ostringstream oss;
+            oss << "decoder layer " << name << " shape invalid for matmul: expected ["
+                << N << ", " << K << "] or [" << K << ", " << N << "], got [";
+            for (size_t i = 0; i < t->shape().size(); ++i) {
+                if (i > 0) oss << ", ";
+                oss << t->shape()[i];
+            }
+            oss << "]";
+            throw std::runtime_error(oss.str());
+        }
+    };
+
+    check_matmul("q_proj_weight", weights.q_proj_weight, QProjOut, Hidden);
+    check_matmul("k_proj_weight", weights.k_proj_weight, KVDim, Hidden);
+    check_matmul("v_proj_weight", weights.v_proj_weight, KVDim, Hidden);
+    check_matmul("o_proj_weight", weights.o_proj_weight, Hidden, QMainDim);
+
+    check_shape("q_norm_weight", weights.q_norm_weight, {HeadDim});
+    check_shape("k_norm_weight", weights.k_norm_weight, {HeadDim});
+
+    check_matmul("gate_proj_weight", weights.gate_proj_weight, Intermediate, Hidden);
+    check_matmul("up_proj_weight", weights.up_proj_weight, Intermediate, Hidden);
+    check_matmul("down_proj_weight", weights.down_proj_weight, Hidden, Intermediate);
     if (static_cast<int64_t>(row_to_t.size()) != T) {
         throw std::runtime_error("decoder layer row_to_t size must match sequence length");
     }
@@ -343,8 +387,18 @@ void run_full_attention_core(const Tensor& hidden,
     matmul_b_transposed(normed, *weights.v_proj_weight, v_full, stream);
 
     Tensor q_only({T, QMainDim}, DType::Float16); q_only.allocate();
-    Tensor q_gate({T, QMainDim}, DType::Float16); q_gate.allocate();
-    split_q_gate(q_full, NumQHeads, HeadDim, q_only, q_gate, stream);
+    Tensor q_gate({T, QMainDim}, DType::Float16);  // Only allocate if needed
+    if (use_gated_attn) {
+        q_gate.allocate();
+        split_q_gate(q_full, NumQHeads, HeadDim, q_only, q_gate, stream);
+    } else {
+        // No gating: q_full is already QMainDim, just copy to q_only
+        check_acl(aclrtMemcpyAsync(q_only.data(), q_only.size_bytes(),
+                                   q_full.data(), q_full.size_bytes(),
+                                   ACL_MEMCPY_DEVICE_TO_DEVICE, stream),
+                  "q_full -> q_only");
+        check_acl(aclrtSynchronizeStream(stream), "q_only copy sync");
+    }
 
     Tensor q_heads({T * NumQHeads, HeadDim}, DType::Float16); q_heads.allocate();
     Tensor k_heads({T * NumKVHeads, HeadDim}, DType::Float16); k_heads.allocate();
@@ -436,12 +490,15 @@ void run_full_attention_core(const Tensor& hidden,
     }
 
     Tensor attn_proj({T, Hidden}, DType::Float16); attn_proj.allocate();
-    {
+    if (use_gated_attn) {
         Tensor gate_sig({T, QMainDim}, DType::Float16); gate_sig.allocate();
         sigmoid(q_gate, gate_sig, stream);
         Tensor attn_gated({T, QMainDim}, DType::Float16); attn_gated.allocate();
         mul(attn_out, gate_sig, attn_gated, stream);
         matmul_b_transposed(attn_gated, *weights.o_proj_weight, attn_proj, stream);
+    } else {
+        // No gating: project attn_out directly
+        matmul_b_transposed(attn_out, *weights.o_proj_weight, attn_proj, stream);
     }
 
     Tensor after_attn({T, Hidden}, DType::Float16); after_attn.allocate();
@@ -937,7 +994,16 @@ void full_attention_decoder_layer_step(const Tensor& hidden,
     const int64_t HeadDim = config.head_dim;
     const int64_t QMainDim = NumQHeads * HeadDim;
     const int64_t KVDim = NumKVHeads * HeadDim;
-    const int64_t QProjOut = QMainDim * 2;
+
+    // Detect if the model uses gated attention by checking q_proj shape
+    const auto& q_shape = weights.q_proj_weight->shape();
+    int64_t q_proj_out = 0;
+    if (q_shape.size() == 2) {
+        if (q_shape[1] == Hidden) q_proj_out = q_shape[0];
+        else if (q_shape[0] == Hidden) q_proj_out = q_shape[1];
+    }
+    const bool use_gated_attn = (q_proj_out == QMainDim * 2);
+    const int64_t QProjOut = use_gated_attn ? (QMainDim * 2) : QMainDim;
     const int64_t Intermediate = [&]{
         const auto& s = weights.gate_proj_weight->shape();
         if (s.size() == 2) {
@@ -973,8 +1039,18 @@ void full_attention_decoder_layer_step(const Tensor& hidden,
     }
 
     Tensor q_only({1, QMainDim}, DType::Float16); q_only.allocate();
-    Tensor q_gate({1, QMainDim}, DType::Float16); q_gate.allocate();
-    split_q_gate(q_full, NumQHeads, HeadDim, q_only, q_gate, stream);
+    Tensor q_gate({1, QMainDim}, DType::Float16);  // Only allocate if needed
+    if (use_gated_attn) {
+        q_gate.allocate();
+        split_q_gate(q_full, NumQHeads, HeadDim, q_only, q_gate, stream);
+    } else {
+        // No gating: q_full is already QMainDim, just copy to q_only
+        check_acl(aclrtMemcpyAsync(q_only.data(), q_only.size_bytes(),
+                                   q_full.data(), q_full.size_bytes(),
+                                   ACL_MEMCPY_DEVICE_TO_DEVICE, stream),
+                  "q_full -> q_only");
+        check_acl(aclrtSynchronizeStream(stream), "q_only copy sync");
+    }
 
     Tensor q_heads({NumQHeads, HeadDim}, DType::Float16); q_heads.allocate();
     Tensor k_heads({NumKVHeads, HeadDim}, DType::Float16); k_heads.allocate();
@@ -1006,12 +1082,15 @@ void full_attention_decoder_layer_step(const Tensor& hidden,
     (void)QPerKV;
 
     Tensor attn_proj({1, Hidden}, DType::Float16); attn_proj.allocate();
-    {
+    if (use_gated_attn) {
         Tensor gate_sig({1, QMainDim}, DType::Float16); gate_sig.allocate();
         sigmoid(q_gate, gate_sig, stream);
         Tensor attn_gated({1, QMainDim}, DType::Float16); attn_gated.allocate();
         mul(attn_out, gate_sig, attn_gated, stream);
         matmul_decode_dispatch(attn_gated, weights.o_proj_weight, weights.o_proj_q, weights.o_proj_w8, attn_proj, stream);
+    } else {
+        // No gating: project attn_out directly
+        matmul_decode_dispatch(attn_out, weights.o_proj_weight, weights.o_proj_q, weights.o_proj_w8, attn_proj, stream);
     }
 
     Tensor after_attn({1, Hidden}, DType::Float16); after_attn.allocate();

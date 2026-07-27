@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <iostream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -36,23 +37,30 @@ Tensor load_w(WeightsIndex& index, const std::string& name) {
 
 Tensor load_layer_w(WeightsIndex& index, int layer, const std::string& suffix) {
     return index.load_to_device_as(
-        "model.vision_tower.encoder.layers." + std::to_string(layer) + "." + suffix,
+        "vpm.encoder.layers." + std::to_string(layer) + "." + suffix,
         DType::Float16);
 }
 
 }  // namespace
 
 VisionWeights load_vision_weights(WeightsIndex& index, const VisionConfig& cfg) {
+    std::cout << "[Vision] Loading vision weights..." << std::endl;
     VisionWeights w;
-    w.patch_embedding_w = load_w(index, "model.vision_tower.embeddings.patch_embedding.weight");
-    w.patch_embedding_b = load_w(index, "model.vision_tower.embeddings.patch_embedding.bias");
-    w.position_embedding = load_w(index, "model.vision_tower.embeddings.position_embedding.weight");
+    std::cout << "[Vision] Loading patch embedding..." << std::endl;
+    w.patch_embedding_w = load_w(index, "vpm.embeddings.patch_embedding.weight");
+    w.patch_embedding_b = load_w(index, "vpm.embeddings.patch_embedding.bias");
+    w.position_embedding = load_w(index, "vpm.embeddings.position_embedding.weight");
 
-    w.post_layernorm_w = load_w(index, "model.vision_tower.post_layernorm.weight");
-    w.post_layernorm_b = load_w(index, "model.vision_tower.post_layernorm.bias");
+    std::cout << "[Vision] Loading post layernorm..." << std::endl;
+    w.post_layernorm_w = load_w(index, "vpm.post_layernorm.weight");
+    w.post_layernorm_b = load_w(index, "vpm.post_layernorm.bias");
 
     w.layers.resize(cfg.num_hidden_layers);
+    std::cout << "[Vision] Loading " << cfg.num_hidden_layers << " vision layers..." << std::endl;
     for (int64_t i = 0; i < cfg.num_hidden_layers; ++i) {
+        if (i % 10 == 0) {
+            std::cout << "[Vision] Loading layer " << i << "/" << cfg.num_hidden_layers << "..." << std::endl;
+        }
         auto& lw = w.layers[i];
         const int li = static_cast<int>(i);
         lw.layer_norm1_w = load_layer_w(index, li, "layer_norm1.weight");
@@ -93,10 +101,13 @@ VisionWeights load_vision_weights(WeightsIndex& index, const VisionConfig& cfg) 
         m.linear_2_b = load_w(index, p + ".linear_2.bias");
         return m;
     };
-    w.vit_merger = load_merger("model.vision_tower.vit_merger");
+    // TODO: MiniCPM-O-4.5 uses a different resampler architecture
+    // Temporarily skip vit_merger loading until we implement the correct structure
+    // w.vit_merger = load_merger("resampler");
 
-    // Outer merger: model.merger.mlp.{i}.{linear_1, linear_2, pre_norm}.{weight,bias}
-    // For MiniCPM-V 4.6 merger_times=1 → one downsample MLP that projects to LLM.
+    // TODO: MiniCPM-O-4.5 merger architecture differs from MiniCPM-V
+    // Skip outer merger for now
+    /*
     DownsampleMlpWeights mlp;
     mlp.pre_norm_w = load_w(index, "model.merger.mlp.0.pre_norm.weight");
     mlp.pre_norm_b = load_w(index, "model.merger.mlp.0.pre_norm.bias");
@@ -105,6 +116,8 @@ VisionWeights load_vision_weights(WeightsIndex& index, const VisionConfig& cfg) 
     mlp.linear_2_w = load_w(index, "model.merger.mlp.0.linear_2.weight");
     mlp.linear_2_b = load_w(index, "model.merger.mlp.0.linear_2.bias");
     w.merger_mlp.push_back(std::move(mlp));
+    */
+    std::cout << "[Vision] Vision weights loaded successfully" << std::endl;
 
     return w;
 }

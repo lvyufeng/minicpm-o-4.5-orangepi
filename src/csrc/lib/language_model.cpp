@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <stdexcept>
 #include <string>
 
@@ -55,7 +56,7 @@ Tensor load_weight(WeightsIndex& index, const std::string& name) {
 }
 
 Tensor load_layer_weight(WeightsIndex& index, int layer, const std::string& suffix) {
-    return index.load_to_device_as("model.language_model.layers." + std::to_string(layer) + "." + suffix, DType::Float16);
+    return index.load_to_device_as("llm.model.layers." + std::to_string(layer) + "." + suffix, DType::Float16);
 }
 
 void copy_row(const Tensor& src, int64_t src_row, Tensor& dst, int64_t dst_row, aclrtStream stream) {
@@ -86,26 +87,30 @@ Tensor load_matmul_weight_transposed(WeightsIndex& index, int layer, const std::
     if (src.shape().size() != 2) {
         throw std::runtime_error("matmul weight " + suffix + " expected 2D");
     }
-    const int64_t N = src.shape()[0];
-    const int64_t K = src.shape()[1];
-    if (N > 16384 || (N % 128) != 0) {
-        return src;  // cube fast-path doesn't apply; keep [N, K]
-    }
-    std::vector<uint16_t> hostNK(static_cast<size_t>(N) * K);
-    src.copy_to_host(hostNK.data(), hostNK.size() * sizeof(uint16_t));
-    std::vector<uint16_t> hostKN(static_cast<size_t>(K) * N);
-    for (int64_t n = 0; n < N; ++n) {
-        for (int64_t k = 0; k < K; ++k) {
-            hostKN[k * N + n] = hostNK[n * K + k];
-        }
-    }
-    Tensor dst({K, N}, DType::Float16);
-    dst.copy_from_host(hostKN.data(), hostKN.size() * sizeof(uint16_t));
-    return dst;
+    // TEMPORARY: Skip transpose to avoid slow host copy during model loading
+    // TODO: Implement device-side transpose or load pre-transposed weights
+    return src;
+
+    // const int64_t N = src.shape()[0];
+    // const int64_t K = src.shape()[1];
+    // if (N > 16384 || (N % 128) != 0) {
+    //     return src;  // cube fast-path doesn't apply; keep [N, K]
+    // }
+    // std::vector<uint16_t> hostNK(static_cast<size_t>(N) * K);
+    // src.copy_to_host(hostNK.data(), hostNK.size() * sizeof(uint16_t));
+    // std::vector<uint16_t> hostKN(static_cast<size_t>(K) * N);
+    // for (int64_t n = 0; n < N; ++n) {
+    //     for (int64_t k = 0; k < K; ++k) {
+    //         hostKN[k * N + n] = hostNK[n * K + k];
+    //     }
+    // }
+    // Tensor dst({K, N}, DType::Float16);
+    // dst.copy_from_host(hostKN.data(), hostKN.size() * sizeof(uint16_t));
+    // return dst;
 }
 
 std::string layer_base(int layer, const std::string& suffix) {
-    return "model.language_model.layers." + std::to_string(layer) + "." + suffix;
+    return "llm.model.layers." + std::to_string(layer) + "." + suffix;
 }
 
 W4A16QuantizedWeight load_layer_w4a16_if_present(WeightsIndex& index, int layer, const std::string& suffix) {
@@ -153,25 +158,35 @@ Tensor build_conv_step_weight(const Tensor& conv_w) {
 
 LanguageModelConfig default_minicpmo45_lm_config() {
     LanguageModelConfig cfg;
-    cfg.layer_types = {
-        "linear_attention", "linear_attention", "linear_attention", "full_attention",
-        "linear_attention", "linear_attention", "linear_attention", "full_attention",
-        "linear_attention", "linear_attention", "linear_attention", "full_attention",
-        "linear_attention", "linear_attention", "linear_attention", "full_attention",
-        "linear_attention", "linear_attention", "linear_attention", "full_attention",
-        "linear_attention", "linear_attention", "linear_attention", "full_attention",
-    };
+    // MiniCPM-O-4.5 has 36 layers, all using standard self-attention (no linear attention)
+    cfg.layer_types.assign(36, "full_attention");
+    cfg.num_layers = 36;
+    cfg.hidden_size = 4096;
+    cfg.num_q_heads = 32;
+    cfg.num_kv_heads = 8;
+    cfg.head_dim = 128;
+    cfg.vocab_size = 151748;
+    cfg.rope_theta = 1000000.0;
+    cfg.rms_epsilon = 1e-6;
+    cfg.rotary_dim = 128;  // Full head_dim for RoPE
     return cfg;
 }
 
 LanguageModelWeights load_language_model_weights(WeightsIndex& index,
                                                  const LanguageModelConfig& cfg) {
+    std::cout << "[LM] Loading language model weights..." << std::endl;
     LanguageModelWeights w;
-    w.embed = load_weight(index, "model.language_model.embed_tokens.weight");
-    w.final_norm_w = load_weight(index, "model.language_model.norm.weight");
+    std::cout << "[LM] Loading embed_tokens..." << std::endl;
+    w.embed = load_weight(index, "llm.model.embed_tokens.weight");
+    std::cout << "[LM] Loading final norm..." << std::endl;
+    w.final_norm_w = load_weight(index, "llm.model.norm.weight");
     w.layers.resize(cfg.num_layers);
+    std::cout << "[LM] Loading " << cfg.num_layers << " layers..." << std::endl;
     const bool use_w8a8 = w8a8_decode_enabled();
     for (int64_t layer = 0; layer < cfg.num_layers; ++layer) {
+        if (layer % 10 == 0) {
+            std::cout << "[LM] Loading layer " << layer << "/" << cfg.num_layers << "..." << std::endl;
+        }
         auto& lw = w.layers[layer];
         lw.input_norm_w = load_layer_weight(index, static_cast<int>(layer), "input_layernorm.weight");
         lw.post_norm_w = load_layer_weight(index, static_cast<int>(layer), "post_attention_layernorm.weight");
@@ -234,6 +249,7 @@ LanguageModelWeights load_language_model_weights(WeightsIndex& index,
             lw.k_norm_w = load_layer_weight(index, static_cast<int>(layer), "self_attn.k_norm.weight");
         }
     }
+    std::cout << "[LM] All layers loaded. Building lm_head chunks..." << std::endl;
 
     // Pre-build cube-friendly lm_head chunks: [K=hidden, N=16384] per slice,
     // padded with zero columns if the tail vocab piece is smaller. Cube path
@@ -268,6 +284,7 @@ LanguageModelWeights load_language_model_weights(WeightsIndex& index,
         }
         w.lm_head_chunks.push_back(std::move(chunk));
     }
+    std::cout << "[LM] Language model weights loaded successfully" << std::endl;
 
     return w;
 }

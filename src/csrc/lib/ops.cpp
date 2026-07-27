@@ -175,38 +175,9 @@ void matmul_b_transposed(const Tensor& a, const Tensor& b, Tensor& out, aclrtStr
         throw std::runtime_error("matmul_b_transposed out shape mismatch");
     }
 
-    // Cube fast path: B already pre-transposed to [K, N], M=1, N divisible by
-    // 128 (= 8 cores * 16 align), N <= 16384. Cube beats aclnnMm 2-7x at these
-    // shapes per bench_matmul_vec. Larger N (e.g., lm_head N=248094) falls
-    // back to aclnnMm because the cube tiling currently produces wrong output
-    // for N >= ~32k.
-    if (bIsNatural && M == 1 && a.dtype() == DType::Float16 &&
-        b.dtype() == DType::Float16 && out.dtype() == DType::Float16 &&
-        N <= 16384 && (N % 128) == 0) {
-        AclTensorHandle ha2, hb2, ho2;
-        make_acl_tensor(a, ha2);
-        make_acl_tensor(b, hb2);
-        make_acl_tensor(out, ho2);
-        uint64_t ws_size = 0;
-        aclOpExecutor* executor = nullptr;
-        auto ret = aclnnMatmulCubeCustomGetWorkspaceSize(ha2.tensor, hb2.tensor, ho2.tensor,
-                                                          &ws_size, &executor);
-        if (ret != 0) {
-            throw std::runtime_error("aclnnMatmulCubeCustomGetWorkspaceSize failed: " + std::to_string(ret));
-        }
-        void* workspace = nullptr;
-        if (ws_size > 0) {
-            check_acl(aclrtMalloc(&workspace, ws_size, ACL_MEM_MALLOC_HUGE_FIRST), "matmul_cube ws malloc");
-        }
-        ret = aclnnMatmulCubeCustom(workspace, ws_size, executor, stream);
-        auto sync_ret = aclrtSynchronizeStream(stream);
-        if (workspace) aclrtFree(workspace);
-        if (ret != 0) {
-            throw std::runtime_error("aclnnMatmulCubeCustom failed: " + std::to_string(ret));
-        }
-        check_acl(sync_ret, "aclrtSynchronizeStream matmul_cube");
-        return;
-    }
+    // Cube fast path disabled: aclnnMatmulCubeCustom not supported on Orange Pi 310B
+    // Fall back to standard matmul for all cases
+    // Original condition was: bIsNatural && M == 1 && N <= 16384 && (N % 128) == 0
 
     // CANN's precompiled MatMulV2_FP16 kernel binary doesn't cover the
     // (M >= 64, K > 4096) corner — kernel lookup returns "kernel pointer null"
@@ -414,24 +385,80 @@ void incre_flash_attention(const Tensor& query,
         throw std::runtime_error("incre_flash_attention context out of range");
     }
 
-    // Our custom op AttentionStepCustom: one block per q-head, computes
-    // softmax(q · K_kvh^T * scale) · V_kvh and writes into out.
-    AclTensorHandle hq, hk, hv, ho;
-    make_acl_tensor(query, hq);
-    make_acl_tensor(k_cache, hk);
-    make_acl_tensor(v_cache, hv);
-    make_acl_tensor(out, ho);
+    // Fallback: compute attention per query head using basic operations
+    // Since custom ops aren't supported, implement with matmul + softmax_last_dim
 
-    uint64_t ws_size = 0;
-    aclOpExecutor* executor = nullptr;
-    auto ret = aclnnAttentionStepCustomGetWorkspaceSize(
-        hq.tensor, hk.tensor, hv.tensor,
-        context, num_q_heads, num_kv_heads, static_cast<double>(scale),
-        ho.tensor, &ws_size, &executor);
-    if (ret != 0) {
-        throw std::runtime_error("aclnnAttentionStepCustomGetWorkspaceSize failed: " + std::to_string(ret));
+    const int64_t group_size = num_q_heads / num_kv_heads;
+    const size_t head_bytes = head_dim * 2;  // fp16
+
+    // Process each query head independently
+    for (int64_t q_h = 0; q_h < num_q_heads; ++q_h) {
+        const int64_t kv_h = q_h / group_size;
+
+        // Extract query vector for this head: [head_dim]
+        Tensor q_vec({1, head_dim}, DType::Float16);
+        q_vec.allocate();
+        check_acl(aclrtMemcpy(q_vec.data(), head_bytes,
+                 static_cast<const uint8_t*>(query.data()) + q_h * head_bytes,
+                 head_bytes, ACL_MEMCPY_DEVICE_TO_DEVICE), "q_vec");
+
+        // Extract K cache for this KV head: [context, head_dim]
+        Tensor k_head({context, head_dim}, DType::Float16);
+        k_head.allocate();
+        for (int64_t t = 0; t < context; ++t) {
+            check_acl(aclrtMemcpy(
+                static_cast<uint8_t*>(k_head.data()) + t * head_bytes,
+                head_bytes,
+                static_cast<const uint8_t*>(k_cache.data()) + t * num_kv_heads * head_bytes + kv_h * head_bytes,
+                head_bytes,
+                ACL_MEMCPY_DEVICE_TO_DEVICE), "k_head");
+        }
+
+        // Compute attention scores: q @ k^T -> [1, context]
+        // Use matmul_b_transposed: q[1, head_dim] @ k[context, head_dim]^T
+        Tensor scores({1, context}, DType::Float16);
+        scores.allocate();
+        matmul_b_transposed(q_vec, k_head, scores, stream);
+
+        // Scale scores
+        AclTensorHandle hs;
+        make_acl_tensor(scores, hs);
+        aclScalar* scale_scalar = aclCreateScalar(&scale, ACL_FLOAT);
+        uint64_t ws_size = 0;
+        aclOpExecutor* executor = nullptr;
+        check_acl(aclnnMulsGetWorkspaceSize(hs.tensor, scale_scalar, hs.tensor, &ws_size, &executor), "muls ws");
+        run_op("aclnnMuls", ws_size, executor, stream, aclnnMuls);
+        aclDestroyScalar(scale_scalar);
+
+        // Softmax over context dimension
+        softmax_last_dim(scores, scores, stream);
+
+        // Extract V cache for this KV head: [context, head_dim]
+        Tensor v_head({context, head_dim}, DType::Float16);
+        v_head.allocate();
+        for (int64_t t = 0; t < context; ++t) {
+            check_acl(aclrtMemcpy(
+                static_cast<uint8_t*>(v_head.data()) + t * head_bytes,
+                head_bytes,
+                static_cast<const uint8_t*>(v_cache.data()) + t * num_kv_heads * head_bytes + kv_h * head_bytes,
+                head_bytes,
+                ACL_MEMCPY_DEVICE_TO_DEVICE), "v_head");
+        }
+
+        // Compute output: scores @ v -> [1, head_dim]
+        Tensor out_vec({1, head_dim}, DType::Float16);
+        out_vec.allocate();
+        matmul(scores, v_head, out_vec, stream);
+
+        // Copy to final output
+        check_acl(aclrtMemcpy(
+            static_cast<uint8_t*>(out.data()) + q_h * head_bytes,
+            head_bytes,
+            out_vec.data(), head_bytes,
+            ACL_MEMCPY_DEVICE_TO_DEVICE), "out_vec");
     }
-    run_op("aclnnAttentionStepCustom", ws_size, executor, stream, aclnnAttentionStepCustom);
+
+    check_acl(aclrtSynchronizeStream(stream), "incre_flash_attention sync");
 }
 
 void silu_mul(const Tensor& gate, const Tensor& up, Tensor& out, aclrtStream stream) {
@@ -441,18 +468,12 @@ void silu_mul(const Tensor& gate, const Tensor& up, Tensor& out, aclrtStream str
     if (gate.shape() != up.shape() || gate.shape() != out.shape()) {
         throw std::runtime_error("silu_mul shape mismatch");
     }
-    AclTensorHandle hg, hu, ho;
-    make_acl_tensor(gate, hg);
-    make_acl_tensor(up, hu);
-    make_acl_tensor(out, ho);
 
-    uint64_t ws_size = 0;
-    aclOpExecutor* executor = nullptr;
-    auto ret = aclnnSiluMulCustomGetWorkspaceSize(hg.tensor, hu.tensor, ho.tensor, &ws_size, &executor);
-    if (ret != 0) {
-        throw std::runtime_error("aclnnSiluMulCustomGetWorkspaceSize failed: " + std::to_string(ret));
-    }
-    run_op("aclnnSiluMulCustom", ws_size, executor, stream, aclnnSiluMulCustom);
+    // Decompose into silu(gate) * up since aclnnSiluMulCustom is not supported
+    Tensor gate_silu(gate.shape(), DType::Float16);
+    gate_silu.allocate();
+    silu(gate, gate_silu, stream);
+    mul(gate_silu, up, out, stream);
 }
 
 void add(const Tensor& a, const Tensor& b, Tensor& out, aclrtStream stream) {

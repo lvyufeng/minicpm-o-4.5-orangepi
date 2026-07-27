@@ -67,7 +67,7 @@ class OrangePiBackend:
         try:
             self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self._socket.connect((self.backend_server_host, self.backend_server_port))
-            self._socket.settimeout(300.0)  # 5min timeout for long operations
+            self._socket.settimeout(900.0)  # 15min timeout for model loading
 
             # Send init request
             response = self._send_request({

@@ -16,8 +16,8 @@ def test_tokenizer_flow():
     print("Testing Tokenizer Integration")
     print("=" * 60)
 
-    # Note: Replace with actual model path
-    model_path = "/path/to/MiniCPM-o-4.5"
+    # Model path (resolve to absolute path)
+    model_path = str(Path(__file__).parent.parent / "models" / "MiniCPM-o-4.5")
 
     print("\n[1/5] Creating backend...")
     backend = create_backend(
