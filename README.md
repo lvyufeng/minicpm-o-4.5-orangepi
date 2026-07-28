@@ -162,20 +162,33 @@ python examples/test_tokenizer.py
 
 ## 性能状态
 
-当前性能（4-token prefill + 5-token generation）:
+**实测性能**（Orange Pi AIPro 20T / Ascend 310B）:
+
+| 阶段 | 冷启动 | 热启动 | 说明 |
+|------|--------|--------|------|
+| Model loading | 60-80s | - | Load 17.7GB weights (4 shards) |
+| Prefill (4 tokens) | 21s | 3s | First run compiles kernels |
+| Decode | 0.4 tok/s | **400+ tok/s** | Huge JIT penalty on first generate |
+
+**优化历程**（基于 per-head attention baseline）:
 
 | 优化阶段 | 耗时 | 提升 | 说明 |
 |---------|------|------|------|
 | 基础实现 | 207s | - | Per-head attention with sync copies |
 | 异步拷贝优化 | 147s | 29% | Removed 128 sync points in attention loop |
 
+**关键发现**:
+- CANN kernel JIT 编译导致首次推理慢 1000x，但编译后的 kernel 会缓存到磁盘（`~/atc_data/kernel_cache/`）
+- 热启动后真实性能：**400+ tokens/s**（热路径，无 JIT 开销）
+- Warmup 可以预热部分 kernel，但无法完全消除冷启动延迟（每个 session/token 可能触发不同 kernel 变体）
+
 下一步优化方向:
+- [ ] 自定义 Cube matmul 算子（当前用标准 `aclnnMatmul`）
+- [ ] 权重量化 (W4A16/W8A8) - 需要预量化权重
 - [ ] 批量化 attention 计算（当前仍是32个头串行处理）
-- [ ] 自定义 Cube matmul 算子
-- [ ] 权重量化 (W4A16/W8A8)
 - [ ] 流式生成支持
 
-> 注：`aclnnPromptFlashAttention` 在 Ascend 310B 上测试返回错误码 561103，暂不可用；已尝试用 `batch_matmul` 批量化 32 个头但重组张量的开销抵消了收益，需要更优的数据布局方案。
+> 注：`aclnnPromptFlashAttention` 在 Ascend 310B 上返回错误码 561103 不可用；`batch_matmul` 批量化尝试因张量重组开销过大而放弃。
 
 ## License
 
