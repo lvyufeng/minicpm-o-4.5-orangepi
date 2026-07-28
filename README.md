@@ -183,14 +183,18 @@ python examples/test_tokenizer.py
 - Warmup 可以预热部分 kernel，但无法完全消除冷启动延迟（每个 session/token 可能触发不同 kernel 变体）
 
 下一步优化方向:
-- [ ] 权重量化 (W4A16/W8A8) - 已有自定义算子，需预量化权重和集成测试
-- [ ] 批量化 attention 计算（当前仍是32个头串行处理）
+- [ ] 预量化权重文件 (W4A16/W8A8 GPTQ/AWQ 格式) - 避免运行时量化开销
+- [ ] 探索其他 Ascend 310B 支持的 attention 加速方案
+- [ ] 批量化 attention 计算（减少 per-head 串行开销）
 - [ ] 流式生成支持
 
 > **已探索但不可用的优化**:
 > - `aclnnPromptFlashAttention`: 错误码 561103（Ascend 310B 不支持）
-> - `aclnnMatmulCubeCustom`: 错误码 161001（自定义 Cube 算子已编译和链接，但运行时对 M=1 decode 形状返回参数错误）
+> - `aclnnMatmulCubeCustom`: 错误码 161001（自定义 Cube 算子在 M=1 decode 形状上返回参数错误）
 > - `batch_matmul`: 张量重组开销过大，性能反而下降
+> - W8A8 动态量化: 运行时量化需要大量 device↔host 同步拷贝，导致模型加载阻塞（测试卡在第0层超过80秒）
+>
+> 当前性能瓶颈是 per-head attention 串行处理（32个头）。Ascend 310B 的标准 Flash Attention 和 Cube matmul 算子均不可用，400+ tok/s 的热路径性能已接近当前架构上限。
 
 ## License
 
