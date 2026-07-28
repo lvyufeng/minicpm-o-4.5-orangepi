@@ -116,7 +116,8 @@ Tensor prefill_from_embeddings(const Tensor& prompt_hidden,
                                DecodeState& state,
                                aclrtStream stream);
 
-// Apply final RMSNorm + tied-embedding LM head, return argmax token id.
+// Apply final RMSNorm + LM head (own weight matrix, not tied to input
+// embeddings), return argmax token id.
 int64_t lm_head_greedy(const Tensor& last_hidden_1xH,
                        const LanguageModelWeights& w,
                        const LanguageModelConfig& cfg,

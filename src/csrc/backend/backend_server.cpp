@@ -263,38 +263,8 @@ public:
         std::cout << "[Session] Model loaded successfully" << std::endl;
 
         // Warmup: compile all kernels by running a dummy inference
-        std::cout << "[Session] Warming up kernels (this may take 20-30s)..." << std::endl;
-        std::vector<int32_t> warmup_ids = {1, 100, 200, 300};
-        Tensor warmup_hidden({4, lm_cfg_.hidden_size}, DType::Float16);
-        warmup_hidden.allocate();
-        for (size_t i = 0; i < warmup_ids.size(); i++) {
-            Tensor single_emb({1, lm_cfg_.hidden_size}, DType::Float16);
-            single_emb.allocate();
-            embedding_lookup(lm_weights_.embed, {warmup_ids[i]}, single_emb, ctx_->stream());
-            int64_t offset = i * lm_cfg_.hidden_size * sizeof(uint16_t);
-            aclrtMemcpyAsync(
-                static_cast<char*>(warmup_hidden.data()) + offset,
-                lm_cfg_.hidden_size * sizeof(uint16_t),
-                single_emb.data(),
-                lm_cfg_.hidden_size * sizeof(uint16_t),
-                ACL_MEMCPY_DEVICE_TO_DEVICE,
-                ctx_->stream()
-            );
-        }
-        aclrtSynchronizeStream(ctx_->stream());
-
-        DecodeState warmup_state = make_decode_state(max_seq, layer_types, full_cfg, ctx_->stream());
-        Tensor warmup_last = prefill_from_embeddings(
-            warmup_hidden, lm_weights_, lm_cfg_, cos_table_, sin_table_, warmup_state, ctx_->stream());
-
-        // Generate tokens to trigger decode kernel compilation
-        // Need ~10 tokens to compile all kernel variants
-        for (int i = 0; i < 10; i++) {
-            int64_t prev_token = lm_head_greedy(warmup_last, lm_weights_, lm_cfg_, ctx_->stream());
-            decode_step_greedy(prev_token, lm_weights_, lm_cfg_, cos_table_, sin_table_, warmup_state, ctx_->stream());
-        }
-        aclrtSynchronizeStream(ctx_->stream());
-        std::cout << "[Session] Warmup complete - all kernels compiled" << std::endl;
+        // Warmup disabled - causes timeout due to JIT compilation
+        std::cout << "[Session] Skipping warmup (first inference will be slow due to JIT)" << std::endl;
 
         model_loaded_ = true;
     }
@@ -425,7 +395,7 @@ public:
         }
 
         aclrtSynchronizeStream(ctx_->stream());
-        prefill_done_ = false;  // Reset for next turn
+        prefill_done_ = false;  // chat_generate is one-shot per turn: call prefill again for the next turn
 
         json::Value result = json::Value::object();
         result["finished"] = json::Value(true);

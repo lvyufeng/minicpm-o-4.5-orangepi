@@ -151,7 +151,7 @@ python examples/test_tokenizer.py
   - [x] 模型加载测试
   - [x] Prefill 测试
   - [x] 单 token 生成测试
-  - [x] 多 token 生成测试（5 tokens）
+  - [x] 多 token 生成测试（正确性已验证，见下方"关键修复"）
 - [ ] 性能优化
   - [ ] 注意力优化（当前使用低效的per-head fallback实现，需探索Ascend 310B支持的加速方案）
   - [ ] 流式生成支持
@@ -181,6 +181,26 @@ python examples/test_tokenizer.py
 - CANN kernel JIT 编译导致首次推理慢 1000x，但编译后的 kernel 会缓存到磁盘（`~/atc_data/kernel_cache/`）
 - 热启动后真实性能：**400+ tokens/s**（热路径，无 JIT 开销）
 - Warmup 可以预热部分 kernel，但无法完全消除冷启动延迟（每个 session/token 可能触发不同 kernel 变体）
+
+## 关键修复：LM Head 权重错误（严重正确性 bug）
+
+**问题**：模型生成会崩溃成单一重复 token（例如连续 20 个 token 全部输出同一个值）。
+
+**根因**：`language_model.cpp` 中构建 LM head 时错误地复用了输入 embedding 表
+(`llm.model.embed_tokens.weight`) 作为输出投影矩阵，等同于假设了 tied word
+embeddings。但 MiniCPM-O-4.5 的 `config.json` 中 `tie_word_embeddings: false`，
+模型实际有独立的 `llm.lm_head.weight`。两个权重矩阵形状相同
+（`[vocab_size, hidden_size]`），所以不会触发 shape 检查报错，只会产生语义错误
+的 logits——某个特定 token 在错误的权重矩阵下总是取得最高分，导致输出崩溃。
+
+**修复**：加载并使用真正的 `llm.lm_head.weight` 构建 lm_head chunks，不再复用
+`embed_tokens`。
+
+**验证**：修复前后对比（相同输入 `[1,2,3,4,5]`，生成 15 token）：
+- 修复前：`[11, 11, 11, 11, 11, ...]`（1 个唯一 token）
+- 修复后：`[220, 13, 1440, 13775, 402, 8821, 323, 265, 8832, 35780, 3010, 1440, 82736, 562, 3119]`（14 个唯一 token）
+
+不同输入现在会产生不同的输出（验证了 input-sensitivity），且所有生成的 token 都在合法词表范围内。
 
 下一步优化方向:
 - [ ] 预量化权重文件 (W4A16/W8A8 GPTQ/AWQ 格式) - 避免运行时量化开销

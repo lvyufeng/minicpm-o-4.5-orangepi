@@ -251,6 +251,11 @@ LanguageModelWeights load_language_model_weights(WeightsIndex& index,
     }
     std::cout << "[LM] All layers loaded. Building lm_head chunks..." << std::endl;
 
+    // MiniCPM-O-4.5 does NOT tie word embeddings (config.json: tie_word_embeddings=false),
+    // so the LM head uses its own weight matrix, separate from the input embedding table.
+    std::cout << "[LM] Loading lm_head weight (untied)..." << std::endl;
+    Tensor lm_head_w = load_weight(index, "llm.lm_head.weight");
+
     // Pre-build cube-friendly lm_head chunks: [K=hidden, N=16384] per slice,
     // padded with zero columns if the tail vocab piece is smaller. Cube path
     // requires N <= 16384 and N % 128 == 0, so a uniform 16384-wide chunk
@@ -259,11 +264,11 @@ LanguageModelWeights load_language_model_weights(WeightsIndex& index,
     constexpr int64_t kChunkN = 16384;
     const int64_t H = cfg.hidden_size;
     const int64_t V = cfg.vocab_size;
-    if (w.embed.shape().size() != 2 || w.embed.shape()[0] != V || w.embed.shape()[1] != H) {
-        throw std::runtime_error("embed weight shape unexpected for lm_head chunking");
+    if (lm_head_w.shape().size() != 2 || lm_head_w.shape()[0] != V || lm_head_w.shape()[1] != H) {
+        throw std::runtime_error("lm_head weight shape unexpected for lm_head chunking");
     }
     std::vector<uint16_t> embed_host(static_cast<size_t>(V) * H);
-    w.embed.copy_to_host(embed_host.data(), embed_host.size() * sizeof(uint16_t));
+    lm_head_w.copy_to_host(embed_host.data(), embed_host.size() * sizeof(uint16_t));
     std::vector<uint16_t> chunk_host(static_cast<size_t>(H) * kChunkN);
     for (int64_t start = 0; start < V; start += kChunkN) {
         const int64_t valid = std::min<int64_t>(kChunkN, V - start);
