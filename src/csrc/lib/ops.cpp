@@ -389,36 +389,56 @@ void incre_flash_attention(const Tensor& query,
         throw std::runtime_error("incre_flash_attention context out of range");
     }
 
-    // Fallback: compute attention per query head using basic operations
-    // Since custom ops aren't supported, implement with matmul + softmax_last_dim
+    // Fallback: compute attention per query head using basic operations.
+    // Since custom ops aren't supported (PromptFlashAttention returns 561103),
+    // implement with matmul + softmax.
+    //
+    // KEY PERFORMANCE ISSUE: CANN JIT compiles a new kernel binary for every
+    // distinct (M, N, K) shape it sees. Without bucketing, context grows by 1
+    // every step (15, 16, 17, ...) so k_head[context, head_dim] and
+    // scores[1, context] are a fresh shape on every token, triggering a JIT
+    // miss each time. With 36 layers × 32 heads × ~5 ops each, a 30-token
+    // generation sees thousands of JIT compilations — ~17 s/token on cold cache.
+    //
+    // Fix: round context up to the nearest power-of-two bucket. Shapes seen by
+    // CANN are now {[1,128], [64,128], [1,64]} etc., compiled once per bucket
+    // and reused for all tokens in that bucket. Padding positions are zeroed in
+    // K/V and masked to -inf in the score tensor before softmax, so they
+    // contribute 0 to the output.
+    static constexpr int64_t kBuckets[] = {16, 32, 64, 128, 256, 512, 1024, 2048, 4096};
+    int64_t bucket = kBuckets[std::size(kBuckets) - 1];
+    for (int64_t b : kBuckets) {
+        if (b >= context) { bucket = b; break; }
+    }
 
     const int64_t group_size = num_q_heads / num_kv_heads;
     const size_t head_bytes = head_dim * 2;  // fp16
 
-    // All memcpys below are queued as Async on `stream`, matching the pattern
-    // used elsewhere in this codebase (e.g. copy_head_to_seq in
-    // decoder_layer.cpp): same-stream ops execute in submission order, so the
-    // matmuls that depend on a gather loop's output are correctly ordered
-    // after it without an explicit per-iteration sync. A single sync happens
-    // once at the end of the whole function. Previously each of these was a
-    // *synchronous* aclrtMemcpy, meaning every one of the
-    // num_q_heads * context * 2 (K+V) per-timestep gathers blocked the host
-    // until it completed -- for a 15-token context and 32 heads that's ~960
-    // blocking round-trips per layer, ~34k per generated token across all 36
-    // layers, dwarfing the actual matmul/softmax compute.
+    // Build padding mask [1, bucket]: 0x0000 (0.0) for real positions, 0xFBFF (-65504) for pads.
+    std::vector<uint16_t> mask_host(static_cast<size_t>(bucket), 0xFBFFu);  // -65504 in fp16
+    for (int64_t t = 0; t < context; ++t) mask_host[static_cast<size_t>(t)] = 0x0000u;
+    Tensor pad_mask({1, bucket}, DType::Float16);
+    pad_mask.allocate();
+    pad_mask.copy_from_host(mask_host.data(), static_cast<size_t>(bucket) * sizeof(uint16_t));
+
+    // All async memcpys are on `stream`; matmul/softmax ops are also enqueued
+    // on the same stream and execute in submission order, so no per-iteration
+    // sync is needed. Single sync at function end.
     for (int64_t q_h = 0; q_h < num_q_heads; ++q_h) {
         const int64_t kv_h = q_h / group_size;
 
-        // Extract query vector for this head: [head_dim]
+        // q_vec: [1, head_dim]
         Tensor q_vec({1, head_dim}, DType::Float16);
         q_vec.allocate();
         check_acl(aclrtMemcpyAsync(q_vec.data(), head_bytes,
                  static_cast<const uint8_t*>(query.data()) + q_h * head_bytes,
                  head_bytes, ACL_MEMCPY_DEVICE_TO_DEVICE, stream), "q_vec");
 
-        // Extract K cache for this KV head: [context, head_dim]
-        Tensor k_head({context, head_dim}, DType::Float16);
+        // k_head: [bucket, head_dim] — zero-pad, then fill real rows
+        Tensor k_head({bucket, head_dim}, DType::Float16);
         k_head.allocate();
+        check_acl(aclrtMemsetAsync(k_head.data(), k_head.size_bytes(), 0,
+                                   k_head.size_bytes(), stream), "k_head zero");
         for (int64_t t = 0; t < context; ++t) {
             check_acl(aclrtMemcpyAsync(
                 static_cast<uint8_t*>(k_head.data()) + t * head_bytes,
@@ -428,13 +448,11 @@ void incre_flash_attention(const Tensor& query,
                 ACL_MEMCPY_DEVICE_TO_DEVICE, stream), "k_head");
         }
 
-        // Compute attention scores: q @ k^T -> [1, context]
-        // Use matmul_b_transposed: q[1, head_dim] @ k[context, head_dim]^T
-        Tensor scores({1, context}, DType::Float16);
+        // scores [1, bucket] = q @ k^T, then scale + pad-mask, then softmax
+        Tensor scores({1, bucket}, DType::Float16);
         scores.allocate();
         matmul_b_transposed(q_vec, k_head, scores, stream);
 
-        // Scale scores
         AclTensorHandle hs;
         make_acl_tensor(scores, hs);
         aclScalar* scale_scalar = aclCreateScalar(&scale, ACL_FLOAT);
@@ -444,12 +462,16 @@ void incre_flash_attention(const Tensor& query,
         run_op("aclnnMuls", ws_size, executor, stream, aclnnMuls);
         aclDestroyScalar(scale_scalar);
 
-        // Softmax over context dimension
-        softmax_last_dim(scores, scores, stream);
+        Tensor masked_scores({1, bucket}, DType::Float16);
+        masked_scores.allocate();
+        add(scores, pad_mask, masked_scores, stream);
+        softmax_last_dim(masked_scores, masked_scores, stream);
 
-        // Extract V cache for this KV head: [context, head_dim]
-        Tensor v_head({context, head_dim}, DType::Float16);
+        // v_head: [bucket, head_dim] — zero-pad, then fill real rows
+        Tensor v_head({bucket, head_dim}, DType::Float16);
         v_head.allocate();
+        check_acl(aclrtMemsetAsync(v_head.data(), v_head.size_bytes(), 0,
+                                   v_head.size_bytes(), stream), "v_head zero");
         for (int64_t t = 0; t < context; ++t) {
             check_acl(aclrtMemcpyAsync(
                 static_cast<uint8_t*>(v_head.data()) + t * head_bytes,
@@ -459,12 +481,12 @@ void incre_flash_attention(const Tensor& query,
                 ACL_MEMCPY_DEVICE_TO_DEVICE, stream), "v_head");
         }
 
-        // Compute output: scores @ v -> [1, head_dim]
+        // out_vec [1, head_dim] = masked_scores @ v_head
         Tensor out_vec({1, head_dim}, DType::Float16);
         out_vec.allocate();
-        matmul(scores, v_head, out_vec, stream);
+        matmul(masked_scores, v_head, out_vec, stream);
 
-        // Copy to final output
+        // scatter to final output
         check_acl(aclrtMemcpyAsync(
             static_cast<uint8_t*>(out.data()) + q_h * head_bytes,
             head_bytes,

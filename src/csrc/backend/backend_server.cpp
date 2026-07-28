@@ -274,6 +274,20 @@ public:
             throw std::runtime_error("Model not loaded");
         }
 
+        // Reset decode state so a new conversation turn can be prefilled.
+        // This is safe to call repeatedly — each prefill starts a fresh context.
+        std::vector<std::string> layer_types;
+        for (int i = 0; i < lm_cfg_.num_layers; i++) layer_types.push_back(lm_cfg_.layer_types[i]);
+        FullAttentionDecoderLayerConfig full_cfg;
+        full_cfg.num_q_heads  = lm_cfg_.num_q_heads;
+        full_cfg.num_kv_heads = lm_cfg_.num_kv_heads;
+        full_cfg.head_dim     = lm_cfg_.head_dim;
+        full_cfg.rotary_dim   = lm_cfg_.rotary_dim;
+        full_cfg.rms_epsilon  = lm_cfg_.rms_epsilon;
+        decode_state_ = std::make_unique<DecodeState>(
+            make_decode_state(4096, layer_types, full_cfg, ctx_->stream()));
+        prefill_done_ = false;
+
         // Extract input_ids array from params
         if (!params.contains("input_ids")) {
             throw std::runtime_error("Missing input_ids in chat_prefill request");
