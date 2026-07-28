@@ -16,6 +16,7 @@
 #include <aclnnop/aclnn_cast.h>
 #include <aclnnop/aclnn_mean.h>
 #include <aclnnop/aclnn_rsqrt.h>
+#include <aclnnop/aclnn_rms_norm.h>
 #include <aclnnop/aclnn_sub.h>
 #include <aclnnop/aclnn_convolution.h>
 #include <aclnnop/aclnn_gelu_v2.h>
@@ -394,27 +395,37 @@ void incre_flash_attention(const Tensor& query,
     const int64_t group_size = num_q_heads / num_kv_heads;
     const size_t head_bytes = head_dim * 2;  // fp16
 
-    // Process each query head independently
+    // All memcpys below are queued as Async on `stream`, matching the pattern
+    // used elsewhere in this codebase (e.g. copy_head_to_seq in
+    // decoder_layer.cpp): same-stream ops execute in submission order, so the
+    // matmuls that depend on a gather loop's output are correctly ordered
+    // after it without an explicit per-iteration sync. A single sync happens
+    // once at the end of the whole function. Previously each of these was a
+    // *synchronous* aclrtMemcpy, meaning every one of the
+    // num_q_heads * context * 2 (K+V) per-timestep gathers blocked the host
+    // until it completed -- for a 15-token context and 32 heads that's ~960
+    // blocking round-trips per layer, ~34k per generated token across all 36
+    // layers, dwarfing the actual matmul/softmax compute.
     for (int64_t q_h = 0; q_h < num_q_heads; ++q_h) {
         const int64_t kv_h = q_h / group_size;
 
         // Extract query vector for this head: [head_dim]
         Tensor q_vec({1, head_dim}, DType::Float16);
         q_vec.allocate();
-        check_acl(aclrtMemcpy(q_vec.data(), head_bytes,
+        check_acl(aclrtMemcpyAsync(q_vec.data(), head_bytes,
                  static_cast<const uint8_t*>(query.data()) + q_h * head_bytes,
-                 head_bytes, ACL_MEMCPY_DEVICE_TO_DEVICE), "q_vec");
+                 head_bytes, ACL_MEMCPY_DEVICE_TO_DEVICE, stream), "q_vec");
 
         // Extract K cache for this KV head: [context, head_dim]
         Tensor k_head({context, head_dim}, DType::Float16);
         k_head.allocate();
         for (int64_t t = 0; t < context; ++t) {
-            check_acl(aclrtMemcpy(
+            check_acl(aclrtMemcpyAsync(
                 static_cast<uint8_t*>(k_head.data()) + t * head_bytes,
                 head_bytes,
                 static_cast<const uint8_t*>(k_cache.data()) + t * num_kv_heads * head_bytes + kv_h * head_bytes,
                 head_bytes,
-                ACL_MEMCPY_DEVICE_TO_DEVICE), "k_head");
+                ACL_MEMCPY_DEVICE_TO_DEVICE, stream), "k_head");
         }
 
         // Compute attention scores: q @ k^T -> [1, context]
@@ -440,12 +451,12 @@ void incre_flash_attention(const Tensor& query,
         Tensor v_head({context, head_dim}, DType::Float16);
         v_head.allocate();
         for (int64_t t = 0; t < context; ++t) {
-            check_acl(aclrtMemcpy(
+            check_acl(aclrtMemcpyAsync(
                 static_cast<uint8_t*>(v_head.data()) + t * head_bytes,
                 head_bytes,
                 static_cast<const uint8_t*>(v_cache.data()) + t * num_kv_heads * head_bytes + kv_h * head_bytes,
                 head_bytes,
-                ACL_MEMCPY_DEVICE_TO_DEVICE), "v_head");
+                ACL_MEMCPY_DEVICE_TO_DEVICE, stream), "v_head");
         }
 
         // Compute output: scores @ v -> [1, head_dim]
@@ -454,11 +465,11 @@ void incre_flash_attention(const Tensor& query,
         matmul(scores, v_head, out_vec, stream);
 
         // Copy to final output
-        check_acl(aclrtMemcpy(
+        check_acl(aclrtMemcpyAsync(
             static_cast<uint8_t*>(out.data()) + q_h * head_bytes,
             head_bytes,
             out_vec.data(), head_bytes,
-            ACL_MEMCPY_DEVICE_TO_DEVICE), "out_vec");
+            ACL_MEMCPY_DEVICE_TO_DEVICE, stream), "out_vec");
     }
 
     check_acl(aclrtSynchronizeStream(stream), "incre_flash_attention sync");
@@ -601,141 +612,103 @@ void rms_norm(const Tensor& x, const Tensor& gamma, Tensor& out,
         throw std::runtime_error("rms_norm dtype mismatch (x/gamma/out must match)");
     }
 
-    // Build [..., 1] reduce shape
+    // aclnnRmsNorm (fused single-kernel path) returns error 161001 on
+    // Ascend 310B for all tested shapes — not supported.
+    //
+    // Manual decomposition with fp32 intermediate variance:
+    // hidden states carry "massive activation" outliers (~1e4-2e4 magnitude);
+    // squaring those in fp16 (max ~65504) overflows, corrupting the
+    // normalization for the whole row. Computing x*x and the mean-reduce in
+    // fp32 avoids the overflow. The rstd is cast back to x's dtype (fp16)
+    // before the broadcast multiply so the rest of the forward pass stays fp16.
     std::vector<int64_t> reduce_shape = x.shape();
     reduce_shape.back() = 1;
 
-    // The variance computation (x*x, then mean-reduce) must happen in fp32:
-    // hidden states can carry "massive activation" outliers (~1e4-2e4
-    // magnitude, observed in practice for this model), and squaring those in
-    // fp16 (max representable ~65504) overflows/saturates, corrupting the
-    // normalization for the whole row and cascading into wildly wrong
-    // outputs in later layers. fp32 keeps x*x well within range.
-    Tensor x_f32(x.shape(), DType::Float32);
-    x_f32.allocate();
-    Tensor x_sq(x.shape(), DType::Float32);
-    x_sq.allocate();
-    Tensor mean_x_sq(reduce_shape, DType::Float32);
-    mean_x_sq.allocate();
-    Tensor rstd(reduce_shape, x.dtype());
-    rstd.allocate();
-    Tensor scaled(x.shape(), x.dtype());
-    scaled.allocate();
+    Tensor x_f32(x.shape(), DType::Float32);  x_f32.allocate();
+    Tensor x_sq(x.shape(), DType::Float32);   x_sq.allocate();
+    Tensor mean_f32(reduce_shape, DType::Float32); mean_f32.allocate();
+    Tensor rstd(reduce_shape, x.dtype());      rstd.allocate();
+    Tensor scaled(x.shape(), x.dtype());       scaled.allocate();
 
     // 0) x_f32 = cast(x, fp32)
     cast(x, x_f32, stream);
 
     // 1) x_sq = x_f32 * x_f32
     {
-        AclTensorHandle hx, hx2, hsq;
+        AclTensorHandle hx, hsq;
         make_acl_tensor(x_f32, hx);
-        make_acl_tensor(x_f32, hx2);
         make_acl_tensor(x_sq, hsq);
-        uint64_t ws_size = 0;
-        aclOpExecutor* executor = nullptr;
-        auto ret = aclnnMulGetWorkspaceSize(hx.tensor, hx2.tensor, hsq.tensor, &ws_size, &executor);
+        uint64_t ws_size = 0; aclOpExecutor* executor = nullptr;
+        auto ret = aclnnMulGetWorkspaceSize(hx.tensor, hx.tensor, hsq.tensor, &ws_size, &executor);
         if (ret != 0) throw std::runtime_error("rms_norm Mul(x,x) ws failed: " + std::to_string(ret));
         run_op("rms_norm Mul(x,x)", ws_size, executor, stream, aclnnMul);
     }
 
-    // 2) mean(x_sq, dim=-1, keepDim=true), fp32 accumulation
+    // 2) mean_f32 = mean(x_sq, dim=-1, keepDim=true)
     {
         AclTensorHandle hsq, hmean;
         make_acl_tensor(x_sq, hsq);
-        make_acl_tensor(mean_x_sq, hmean);
+        make_acl_tensor(mean_f32, hmean);
         const int64_t last_dim = static_cast<int64_t>(x.shape().size() - 1);
         std::vector<int64_t> dim_data{last_dim};
         aclIntArray* dim = aclCreateIntArray(dim_data.data(), dim_data.size());
         if (dim == nullptr) throw std::runtime_error("rms_norm aclCreateIntArray failed");
-        uint64_t ws_size = 0;
-        aclOpExecutor* executor = nullptr;
+        uint64_t ws_size = 0; aclOpExecutor* executor = nullptr;
         auto ret = aclnnMeanGetWorkspaceSize(hsq.tensor, dim, true,
                                              to_acl_dtype(DType::Float32),
                                              hmean.tensor, &ws_size, &executor);
-        if (ret != 0) {
-            aclDestroyIntArray(dim);
-            throw std::runtime_error("rms_norm Mean ws failed: " + std::to_string(ret));
-        }
-        try {
-            run_op("rms_norm Mean", ws_size, executor, stream, aclnnMean);
-        } catch (...) {
-            aclDestroyIntArray(dim);
-            throw;
-        }
+        if (ret != 0) { aclDestroyIntArray(dim); throw std::runtime_error("rms_norm Mean ws failed: " + std::to_string(ret)); }
+        try { run_op("rms_norm Mean", ws_size, executor, stream, aclnnMean); }
+        catch (...) { aclDestroyIntArray(dim); throw; }
         aclDestroyIntArray(dim);
     }
 
-    // 3) mean += eps; mean_x_sq = rsqrt(mean) (still fp32), then cast down to
-    // x's dtype into rstd for the subsequent (fp16) broadcast multiply.
+    // 3a) mean_f32 += eps
     {
-        AclTensorHandle hmean_in, hmean_out;
-        make_acl_tensor(mean_x_sq, hmean_in);
-        make_acl_tensor(mean_x_sq, hmean_out);
-
-        // 3a) rstd = mean + eps using aclnnAdds (scalar add)
-        float eps_f = static_cast<float>(epsilon);
-        aclScalar* eps_scalar = aclCreateScalar(&eps_f, ACL_FLOAT);
-        if (eps_scalar == nullptr) throw std::runtime_error("rms_norm aclCreateScalar(eps) failed");
-        float alpha_f = 1.0f;
-        aclScalar* alpha_scalar = aclCreateScalar(&alpha_f, ACL_FLOAT);
-        if (alpha_scalar == nullptr) {
-            aclDestroyScalar(eps_scalar);
-            throw std::runtime_error("rms_norm aclCreateScalar(alpha) failed");
-        }
-        uint64_t ws_size = 0;
-        aclOpExecutor* executor = nullptr;
-        auto ret = aclnnAddsGetWorkspaceSize(hmean_in.tensor, eps_scalar, alpha_scalar,
-                                             hmean_out.tensor, &ws_size, &executor);
-        if (ret != 0) {
-            aclDestroyScalar(eps_scalar);
-            aclDestroyScalar(alpha_scalar);
-            throw std::runtime_error("rms_norm Adds ws failed: " + std::to_string(ret));
-        }
-        try {
-            run_op("rms_norm Adds", ws_size, executor, stream, aclnnAdds);
-        } catch (...) {
-            aclDestroyScalar(eps_scalar);
-            aclDestroyScalar(alpha_scalar);
-            throw;
-        }
-        aclDestroyScalar(eps_scalar);
-        aclDestroyScalar(alpha_scalar);
+        AclTensorHandle hm;
+        make_acl_tensor(mean_f32, hm);
+        float eps_f = static_cast<float>(epsilon), alpha_f = 1.0f;
+        aclScalar* eps_s = aclCreateScalar(&eps_f, ACL_FLOAT);
+        aclScalar* alpha_s = aclCreateScalar(&alpha_f, ACL_FLOAT);
+        if (!eps_s || !alpha_s) { aclDestroyScalar(eps_s); aclDestroyScalar(alpha_s); throw std::runtime_error("rms_norm aclCreateScalar failed"); }
+        uint64_t ws_size = 0; aclOpExecutor* executor = nullptr;
+        auto ret = aclnnAddsGetWorkspaceSize(hm.tensor, eps_s, alpha_s, hm.tensor, &ws_size, &executor);
+        if (ret != 0) { aclDestroyScalar(eps_s); aclDestroyScalar(alpha_s); throw std::runtime_error("rms_norm Adds ws failed: " + std::to_string(ret)); }
+        try { run_op("rms_norm Adds", ws_size, executor, stream, aclnnAdds); }
+        catch (...) { aclDestroyScalar(eps_s); aclDestroyScalar(alpha_s); throw; }
+        aclDestroyScalar(eps_s); aclDestroyScalar(alpha_s);
     }
+
+    // 3b) mean_f32 = rsqrt(mean_f32); cast to rstd (fp16)
     {
-        // 3b) mean_x_sq = rsqrt(mean_x_sq), fp32; then cast down to rstd (x's dtype)
-        AclTensorHandle hin, hout;
-        make_acl_tensor(mean_x_sq, hin);
-        make_acl_tensor(mean_x_sq, hout);
-        uint64_t ws_size = 0;
-        aclOpExecutor* executor = nullptr;
-        auto ret = aclnnRsqrtGetWorkspaceSize(hin.tensor, hout.tensor, &ws_size, &executor);
+        AclTensorHandle hm;
+        make_acl_tensor(mean_f32, hm);
+        uint64_t ws_size = 0; aclOpExecutor* executor = nullptr;
+        auto ret = aclnnRsqrtGetWorkspaceSize(hm.tensor, hm.tensor, &ws_size, &executor);
         if (ret != 0) throw std::runtime_error("rms_norm Rsqrt ws failed: " + std::to_string(ret));
         run_op("rms_norm Rsqrt", ws_size, executor, stream, aclnnRsqrt);
-        cast(mean_x_sq, rstd, stream);
+        cast(mean_f32, rstd, stream);
     }
 
-    // 4) scaled = x * rstd (broadcast last dim)
+    // 4) scaled = x * rstd  (broadcast)
     {
         AclTensorHandle hx, hrstd, hout;
         make_acl_tensor(x, hx);
         make_acl_tensor(rstd, hrstd);
         make_acl_tensor(scaled, hout);
-        uint64_t ws_size = 0;
-        aclOpExecutor* executor = nullptr;
+        uint64_t ws_size = 0; aclOpExecutor* executor = nullptr;
         auto ret = aclnnMulGetWorkspaceSize(hx.tensor, hrstd.tensor, hout.tensor, &ws_size, &executor);
         if (ret != 0) throw std::runtime_error("rms_norm Mul(x,rstd) ws failed: " + std::to_string(ret));
         run_op("rms_norm Mul(x,rstd)", ws_size, executor, stream, aclnnMul);
     }
 
-    // 5) out = scaled * gamma (broadcast last dim). Standard RMSNorm (Qwen-style),
-    // NOT the Gemma-style (1 + gamma) variant.
+    // 5) out = scaled * gamma  (standard Qwen-style RMSNorm, NOT Gemma-style 1+gamma)
     {
         AclTensorHandle hscaled, hg, hout;
         make_acl_tensor(scaled, hscaled);
         make_acl_tensor(gamma, hg);
         make_acl_tensor(out, hout);
-        uint64_t ws_size = 0;
-        aclOpExecutor* executor = nullptr;
+        uint64_t ws_size = 0; aclOpExecutor* executor = nullptr;
         auto ret = aclnnMulGetWorkspaceSize(hscaled.tensor, hg.tensor, hout.tensor, &ws_size, &executor);
         if (ret != 0) throw std::runtime_error("rms_norm Mul(*,gamma) ws failed: " + std::to_string(ret));
         run_op("rms_norm Mul(*,gamma)", ws_size, executor, stream, aclnnMul);
