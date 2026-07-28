@@ -364,7 +364,7 @@ public:
 
         std::vector<int32_t> generated_ids;
         generated_ids.push_back(static_cast<int32_t>(prev_token));
-        const int32_t eos_token_id = 151643;  // MiniCPM-O EOS token
+        const int32_t eos_token_id = 151645;  // <|im_end|> per config.json
 
         // Check if first token is EOS
         if (prev_token == eos_token_id) {
@@ -440,7 +440,7 @@ public:
         );
 
         // Store first chunk
-        const int32_t eos_token_id = 151643;
+        const int32_t eos_token_id = 151645;  // <|im_end|> per config.json
         json::Value chunk = json::Value::object();
         chunk["token_id"] = json::Value(static_cast<double>(prev_token));
         chunk["is_eos"] = json::Value(prev_token == eos_token_id);

@@ -202,6 +202,44 @@ embeddings。但 MiniCPM-O-4.5 的 `config.json` 中 `tie_word_embeddings: false
 
 不同输入现在会产生不同的输出（验证了 input-sensitivity），且所有生成的 token 都在合法词表范围内。
 
+## 关键修复：RMSNorm fp16 方差溢出（严重正确性 bug）
+
+**问题**：修复 LM head 后，用真实文本提示词（而非随机 token 序列）测试时，生成
+仍然崩溃——对提示词 "What is the capital of France?" 生成的 40 个 token 全部是
+同一个换行符 token（`198`）。
+
+**根因**：`ops.cpp` 中 `rms_norm()` 计算方差（`mean(x^2)`）时全程使用 fp16
+张量。MiniCPM-O-4.5（Qwen3 backbone）在中间层会出现常见的"超大激活值"
+（massive activation）现象——某些维度的 hidden state 绝对值可达 1.5万~3万。
+这类数值平方后（`17600^2 ≈ 3.1×10^8`）远超 fp16 可表示的最大值（65504），
+在 `x * x` 这一步直接溢出/饱和，导致该 token 的归一化系数完全错误，污染了
+该层的 Q/K/V 投影，误差经 attention 向所有 token 扩散，最终整个网络被推到
+fp16 上限附近，argmax 崩溃成固定 token。
+
+**诊断方法**：新增 `tests/diagnose_layers.cpp` 独立诊断工具，逐层打印
+hidden state 的 mean|x|/max|x| 统计；并搭建独立的 PyTorch 参考实现
+（直接从 safetensors 读取 BF16 权重，不依赖 transformers 的 Qwen3 支持）
+逐层比对数值。第 0-5 层完全吻合，第 6 层开始出现超大激活值峰值（C++ 与
+Python 参考在此处仍一致，说明峰值本身是模型正常行为），但从第 16 层起
+C++ 的 max|x| 被死死钉在 65504 附近（fp16 上限），而 fp32 参考实现同层
+平稳地增长到 3 万左右——确认了 fp16 饱和是 bug 根源。
+
+**修复**：在 `rms_norm()` 内部，将 `x` cast 到 fp32 后再计算 `x*x` 和
+`mean(x*x, dim=-1)`，`rsqrt` 之后再 cast 回原 dtype（fp16）参与后续的
+`scaled = x * rstd` 广播乘法。计算量增加很小（只影响方差归约这一步），
+但避免了平方操作的数值溢出。
+
+**验证**：修复前后对比（真实聊天模板提示词 "What is the capital of France?"）：
+- 修复前：生成 40 个 token 全部是 `198`（换行符，退化崩溃）
+- 修复后：生成 `[151667, 198, 32313, 11, 279, 1196, 374, 10161, 369, 279, 6722, 315]`，
+  解码为 `<think>\nOkay, the user is asking for the capital of`——连贯的英文推理链
+- 逐层数值现在与独立 fp32 PyTorch 参考实现精确吻合（例如 layer 30 mean|x|=6.102
+  vs 参考 6.101，argmax next token 均为 `151667`）
+
+另外顺带修复了 `backend_server.cpp` 中硬编码的 `eos_token_id`：原先误用
+`151643`（实际是 `<|endoftext|>`/`bos_token_id`），改为 `config.json` 中
+真正的 `eos_token_id`：`151645`（`<|im_end|>`）。
+
 下一步优化方向:
 - [ ] 预量化权重文件 (W4A16/W8A8 GPTQ/AWQ 格式) - 避免运行时量化开销
 - [ ] 探索其他 Ascend 310B 支持的 attention 加速方案
