@@ -175,9 +175,12 @@ void matmul_b_transposed(const Tensor& a, const Tensor& b, Tensor& out, aclrtStr
         throw std::runtime_error("matmul_b_transposed out shape mismatch");
     }
 
-    // Cube fast path disabled: aclnnMatmulCubeCustom not supported on Orange Pi 310B
-    // Fall back to standard matmul for all cases
-    // Original condition was: bIsNatural && M == 1 && N <= 16384 && (N % 128) == 0
+    // Cube fast path disabled due to error 161001 on Ascend 310B during warmup.
+    // The custom op exists and is linked, but aclnnMatmulCubeCustomGetWorkspaceSize
+    // returns error 161001 when called with M=1, K=4096, N=4096/12288 decode shapes.
+    // Root cause unknown - may be unsupported shape or missing kernel variant.
+    // Keeping standard aclnnMm path for now.
+    (void)bIsNatural;  // Suppress unused warning
 
     // CANN's precompiled MatMulV2_FP16 kernel binary doesn't cover the
     // (M >= 64, K > 4096) corner — kernel lookup returns "kernel pointer null"

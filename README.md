@@ -183,12 +183,14 @@ python examples/test_tokenizer.py
 - Warmup 可以预热部分 kernel，但无法完全消除冷启动延迟（每个 session/token 可能触发不同 kernel 变体）
 
 下一步优化方向:
-- [ ] 自定义 Cube matmul 算子（当前用标准 `aclnnMatmul`）
-- [ ] 权重量化 (W4A16/W8A8) - 需要预量化权重
+- [ ] 权重量化 (W4A16/W8A8) - 已有自定义算子，需预量化权重和集成测试
 - [ ] 批量化 attention 计算（当前仍是32个头串行处理）
 - [ ] 流式生成支持
 
-> 注：`aclnnPromptFlashAttention` 在 Ascend 310B 上返回错误码 561103 不可用；`batch_matmul` 批量化尝试因张量重组开销过大而放弃。
+> **已探索但不可用的优化**:
+> - `aclnnPromptFlashAttention`: 错误码 561103（Ascend 310B 不支持）
+> - `aclnnMatmulCubeCustom`: 错误码 161001（自定义 Cube 算子已编译和链接，但运行时对 M=1 decode 形状返回参数错误）
+> - `batch_matmul`: 张量重组开销过大，性能反而下降
 
 ## License
 
