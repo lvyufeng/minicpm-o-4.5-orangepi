@@ -2,6 +2,7 @@
 
 #include "minicpmo/acl_context.h"
 #include "minicpmo/ops.h"
+#include "minicpmo/profiling.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1022,22 +1023,28 @@ void full_attention_decoder_layer_step(const Tensor& hidden,
     }
 
     Tensor normed({1, Hidden}, DType::Float16); normed.allocate();
-    rms_norm(hidden, *weights.input_norm_weight, normed, config.rms_epsilon, stream);
+    {
+        ProfileScope _p("decode.rms_norm_in", stream);
+        rms_norm(hidden, *weights.input_norm_weight, normed, config.rms_epsilon, stream);
+    }
 
     Tensor q_full({1, QProjOut}, DType::Float16); q_full.allocate();
     Tensor k_full({1, KVDim}, DType::Float16); k_full.allocate();
     Tensor v_full({1, KVDim}, DType::Float16); v_full.allocate();
-    if (w8a8_weight_ready(weights.q_proj_w8)) {
-        Tensor normed_i8(normed.shape(), DType::Int8); normed_i8.allocate();
-        Tensor normed_scale({1}, DType::Float16); normed_scale.allocate();
-        w8a8_quantize(normed, normed_i8, normed_scale, stream);
-        matmul_decode_w8a8_prequant(normed_i8, normed_scale, *weights.q_proj_w8, q_full, stream);
-        matmul_decode_dispatch(normed, weights.k_proj_weight, weights.k_proj_q, nullptr, k_full, stream);
-        matmul_decode_dispatch(normed, weights.v_proj_weight, weights.v_proj_q, nullptr, v_full, stream);
-    } else {
-        matmul_decode_dispatch(normed, weights.q_proj_weight, weights.q_proj_q, weights.q_proj_w8, q_full, stream);
-        matmul_decode_dispatch(normed, weights.k_proj_weight, weights.k_proj_q, weights.k_proj_w8, k_full, stream);
-        matmul_decode_dispatch(normed, weights.v_proj_weight, weights.v_proj_q, weights.v_proj_w8, v_full, stream);
+    {
+        ProfileScope _p("decode.qkv_proj", stream);
+        if (w8a8_weight_ready(weights.q_proj_w8)) {
+            Tensor normed_i8(normed.shape(), DType::Int8); normed_i8.allocate();
+            Tensor normed_scale({1}, DType::Float16); normed_scale.allocate();
+            w8a8_quantize(normed, normed_i8, normed_scale, stream);
+            matmul_decode_w8a8_prequant(normed_i8, normed_scale, *weights.q_proj_w8, q_full, stream);
+            matmul_decode_dispatch(normed, weights.k_proj_weight, weights.k_proj_q, nullptr, k_full, stream);
+            matmul_decode_dispatch(normed, weights.v_proj_weight, weights.v_proj_q, nullptr, v_full, stream);
+        } else {
+            matmul_decode_dispatch(normed, weights.q_proj_weight, weights.q_proj_q, weights.q_proj_w8, q_full, stream);
+            matmul_decode_dispatch(normed, weights.k_proj_weight, weights.k_proj_q, weights.k_proj_w8, k_full, stream);
+            matmul_decode_dispatch(normed, weights.v_proj_weight, weights.v_proj_q, weights.v_proj_w8, v_full, stream);
+        }
     }
 
     Tensor q_only({1, QMainDim}, DType::Float16); q_only.allocate();
@@ -1061,15 +1068,21 @@ void full_attention_decoder_layer_step(const Tensor& hidden,
 
     Tensor q_normed({NumQHeads, HeadDim}, DType::Float16); q_normed.allocate();
     Tensor k_normed({NumKVHeads, HeadDim}, DType::Float16); k_normed.allocate();
-    rms_norm(q_heads, *weights.q_norm_weight, q_normed, config.rms_epsilon, stream);
-    rms_norm(k_heads, *weights.k_norm_weight, k_normed, config.rms_epsilon, stream);
+    {
+        ProfileScope _p("decode.rms_norm_qk", stream);
+        rms_norm(q_heads, *weights.q_norm_weight, q_normed, config.rms_epsilon, stream);
+        rms_norm(k_heads, *weights.k_norm_weight, k_normed, config.rms_epsilon, stream);
+    }
 
     std::vector<int32_t> q_row_to_t(NumQHeads, pos);
     std::vector<int32_t> k_row_to_t(NumKVHeads, pos);
     Tensor q_rope({NumQHeads, HeadDim}, DType::Float16); q_rope.allocate();
     Tensor k_rope({NumKVHeads, HeadDim}, DType::Float16); k_rope.allocate();
-    apply_rope_partial(q_normed, cos_table, sin_table, q_row_to_t, config.rotary_dim, q_rope, stream);
-    apply_rope_partial(k_normed, cos_table, sin_table, k_row_to_t, config.rotary_dim, k_rope, stream);
+    {
+        ProfileScope _p("decode.rope", stream);
+        apply_rope_partial(q_normed, cos_table, sin_table, q_row_to_t, config.rotary_dim, q_rope, stream);
+        apply_rope_partial(k_normed, cos_table, sin_table, k_row_to_t, config.rotary_dim, k_rope, stream);
+    }
 
     Tensor k_row({1, KVDim}, DType::Float16); k_row.allocate();
     pack_heads_to_row(k_rope, k_row, NumKVHeads, HeadDim, stream);
@@ -1078,28 +1091,37 @@ void full_attention_decoder_layer_step(const Tensor& hidden,
 
     Tensor attn_out({1, QMainDim}, DType::Float16); attn_out.allocate();
     const float attn_scale = 1.0f / std::sqrt(static_cast<float>(HeadDim));
-    incre_flash_attention(q_rope, cache.k_cache, cache.v_cache,
-                          Context, NumQHeads, NumKVHeads, HeadDim,
-                          attn_scale, attn_out, stream);
+    {
+        ProfileScope _p("decode.attention", stream);
+        incre_flash_attention(q_rope, cache.k_cache, cache.v_cache,
+                              Context, NumQHeads, NumKVHeads, HeadDim,
+                              attn_scale, attn_out, stream);
+    }
     (void)QPerKV;
 
     Tensor attn_proj({1, Hidden}, DType::Float16); attn_proj.allocate();
-    if (use_gated_attn) {
-        Tensor gate_sig({1, QMainDim}, DType::Float16); gate_sig.allocate();
-        sigmoid(q_gate, gate_sig, stream);
-        Tensor attn_gated({1, QMainDim}, DType::Float16); attn_gated.allocate();
-        mul(attn_out, gate_sig, attn_gated, stream);
-        matmul_decode_dispatch(attn_gated, weights.o_proj_weight, weights.o_proj_q, weights.o_proj_w8, attn_proj, stream);
-    } else {
-        // No gating: project attn_out directly
-        matmul_decode_dispatch(attn_out, weights.o_proj_weight, weights.o_proj_q, weights.o_proj_w8, attn_proj, stream);
+    {
+        ProfileScope _p("decode.o_proj", stream);
+        if (use_gated_attn) {
+            Tensor gate_sig({1, QMainDim}, DType::Float16); gate_sig.allocate();
+            sigmoid(q_gate, gate_sig, stream);
+            Tensor attn_gated({1, QMainDim}, DType::Float16); attn_gated.allocate();
+            mul(attn_out, gate_sig, attn_gated, stream);
+            matmul_decode_dispatch(attn_gated, weights.o_proj_weight, weights.o_proj_q, weights.o_proj_w8, attn_proj, stream);
+        } else {
+            // No gating: project attn_out directly
+            matmul_decode_dispatch(attn_out, weights.o_proj_weight, weights.o_proj_q, weights.o_proj_w8, attn_proj, stream);
+        }
     }
 
     Tensor after_attn({1, Hidden}, DType::Float16); after_attn.allocate();
     add(hidden, attn_proj, after_attn, stream);
 
     Tensor mlp_in({1, Hidden}, DType::Float16); mlp_in.allocate();
-    rms_norm(after_attn, *weights.post_attention_norm_weight, mlp_in, config.rms_epsilon, stream);
+    {
+        ProfileScope _p("decode.rms_norm_post", stream);
+        rms_norm(after_attn, *weights.post_attention_norm_weight, mlp_in, config.rms_epsilon, stream);
+    }
 
     Tensor gate({1, Intermediate}, DType::Float16); gate.allocate();
     Tensor up({1, Intermediate}, DType::Float16); up.allocate();
@@ -1107,26 +1129,29 @@ void full_attention_decoder_layer_step(const Tensor& hidden,
     Tensor gated({1, Intermediate}, DType::Float16); gated.allocate();
     Tensor mlp_out({1, Hidden}, DType::Float16); mlp_out.allocate();
 
-    if (w8a8_weight_ready(weights.gate_proj_w8) || w8a8_weight_ready(weights.up_proj_w8)) {
-        Tensor mlp_i8(mlp_in.shape(), DType::Int8); mlp_i8.allocate();
-        Tensor mlp_scale({1}, DType::Float16); mlp_scale.allocate();
-        w8a8_quantize(mlp_in, mlp_i8, mlp_scale, stream);
-        if (w8a8_weight_ready(weights.gate_proj_w8)) {
-            matmul_decode_w8a8_prequant(mlp_i8, mlp_scale, *weights.gate_proj_w8, gate, stream);
+    {
+        ProfileScope _p("decode.mlp", stream);
+        if (w8a8_weight_ready(weights.gate_proj_w8) || w8a8_weight_ready(weights.up_proj_w8)) {
+            Tensor mlp_i8(mlp_in.shape(), DType::Int8); mlp_i8.allocate();
+            Tensor mlp_scale({1}, DType::Float16); mlp_scale.allocate();
+            w8a8_quantize(mlp_in, mlp_i8, mlp_scale, stream);
+            if (w8a8_weight_ready(weights.gate_proj_w8)) {
+                matmul_decode_w8a8_prequant(mlp_i8, mlp_scale, *weights.gate_proj_w8, gate, stream);
+            } else {
+                matmul_decode_dispatch(mlp_in, weights.gate_proj_weight, weights.gate_proj_q, nullptr, gate, stream);
+            }
+            if (w8a8_weight_ready(weights.up_proj_w8)) {
+                matmul_decode_w8a8_prequant(mlp_i8, mlp_scale, *weights.up_proj_w8, up, stream);
+            } else {
+                matmul_decode_dispatch(mlp_in, weights.up_proj_weight, weights.up_proj_q, nullptr, up, stream);
+            }
         } else {
-            matmul_decode_dispatch(mlp_in, weights.gate_proj_weight, weights.gate_proj_q, nullptr, gate, stream);
+            matmul_decode_dispatch(mlp_in, weights.gate_proj_weight, weights.gate_proj_q, weights.gate_proj_w8, gate, stream);
+            matmul_decode_dispatch(mlp_in, weights.up_proj_weight, weights.up_proj_q, weights.up_proj_w8, up, stream);
         }
-        if (w8a8_weight_ready(weights.up_proj_w8)) {
-            matmul_decode_w8a8_prequant(mlp_i8, mlp_scale, *weights.up_proj_w8, up, stream);
-        } else {
-            matmul_decode_dispatch(mlp_in, weights.up_proj_weight, weights.up_proj_q, nullptr, up, stream);
-        }
-    } else {
-        matmul_decode_dispatch(mlp_in, weights.gate_proj_weight, weights.gate_proj_q, weights.gate_proj_w8, gate, stream);
-        matmul_decode_dispatch(mlp_in, weights.up_proj_weight, weights.up_proj_q, weights.up_proj_w8, up, stream);
+        silu_mul(gate, up, gated, stream);
+        matmul_decode_dispatch(gated, weights.down_proj_weight, weights.down_proj_q, weights.down_proj_w8, mlp_out, stream);
     }
-    silu_mul(gate, up, gated, stream);
-    matmul_decode_dispatch(gated, weights.down_proj_weight, weights.down_proj_q, weights.down_proj_w8, mlp_out, stream);
     add(after_attn, mlp_out, out, stream);
 }
 

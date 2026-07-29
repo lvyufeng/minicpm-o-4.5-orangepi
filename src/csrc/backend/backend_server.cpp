@@ -20,6 +20,7 @@
 #include "minicpmo/decoder_layer.h"
 #include "minicpmo/language_model.h"
 #include "minicpmo/ops.h"
+#include "minicpmo/profiling.h"
 #include "minicpmo/vision.h"
 #include "minicpmo/weights.h"
 
@@ -365,6 +366,10 @@ public:
 
         std::cout << "[Session] Generating up to " << max_new_tokens << " tokens" << std::endl;
 
+        if (minicpmo::profiling_enabled()) {
+            minicpmo::profile_reset();
+        }
+
         // Clear streaming state
         stream_chunks_.clear();
 
@@ -410,6 +415,10 @@ public:
 
         aclrtSynchronizeStream(ctx_->stream());
         prefill_done_ = false;  // chat_generate is one-shot per turn: call prefill again for the next turn
+
+        if (minicpmo::profiling_enabled()) {
+            minicpmo::profile_print();
+        }
 
         json::Value result = json::Value::object();
         result["finished"] = json::Value(true);

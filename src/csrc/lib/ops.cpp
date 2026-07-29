@@ -1,5 +1,6 @@
 #include "minicpmo/ops.h"
 #include "minicpmo/acl_context.h"
+#include "minicpmo/profiling.h"
 
 #include <cstdint>
 #include <stdexcept>
@@ -437,62 +438,91 @@ void incre_flash_attention(const Tensor& query,
     // All async memcpys are on `stream`; matmul/softmax ops are also enqueued
     // on the same stream and execute in submission order, so no per-iteration
     // sync is needed. Single sync at function end.
-    for (int64_t q_h = 0; q_h < num_q_heads; ++q_h) {
-        const int64_t kv_h = q_h / group_size;
-
-        // q_vec: [1, head_dim]
-        check_acl(aclrtMemcpyAsync(q_vec.data(), head_bytes,
-                 static_cast<const uint8_t*>(query.data()) + q_h * head_bytes,
-                 head_bytes, ACL_MEMCPY_DEVICE_TO_DEVICE, stream), "q_vec");
-
-        // k_head: [bucket, head_dim] — zero-pad, then fill real rows
-        check_acl(aclrtMemsetAsync(k_head.data(), k_head.size_bytes(), 0,
-                                   k_head.size_bytes(), stream), "k_head zero");
-        for (int64_t t = 0; t < context; ++t) {
-            check_acl(aclrtMemcpyAsync(
-                static_cast<uint8_t*>(k_head.data()) + t * head_bytes,
-                head_bytes,
-                static_cast<const uint8_t*>(k_cache.data()) + t * num_kv_heads * head_bytes + kv_h * head_bytes,
-                head_bytes,
-                ACL_MEMCPY_DEVICE_TO_DEVICE, stream), "k_head");
+    //
+    // Loop over KV heads in the outer loop and query heads within each GQA
+    // group in the inner loop, so k_head/v_head are gathered ONCE per KV
+    // head and reused across all `group_size` query heads that share it
+    // (group_size=4 here), instead of re-gathering the same KV head's rows
+    // redundantly for every query head. Profiling showed gather_k+gather_v
+    // cost as much as the qk/softmax math itself, so this cuts a real cost
+    // by ~4x. aclrtMemcpy2dAsync was tried to replace the per-timestep loop
+    // with a single strided copy, but it returns ACL_ERROR_INVALID_PARAM
+    // (100000) for D2D on this CANN build — consistent with the K-tiled
+    // matmul above, which found aclrtMemcpy2dAsync corrupts memory for D2D
+    // on this hardware/SDK. Per-row async memcpy remains the reliable path.
+    for (int64_t kv_h = 0; kv_h < num_kv_heads; ++kv_h) {
+        {
+            ProfileScope _p("attn.gather_k", stream);
+            check_acl(aclrtMemsetAsync(k_head.data(), k_head.size_bytes(), 0,
+                                       k_head.size_bytes(), stream), "k_head zero");
+            for (int64_t t = 0; t < context; ++t) {
+                check_acl(aclrtMemcpyAsync(
+                    static_cast<uint8_t*>(k_head.data()) + t * head_bytes,
+                    head_bytes,
+                    static_cast<const uint8_t*>(k_cache.data()) + t * num_kv_heads * head_bytes + kv_h * head_bytes,
+                    head_bytes,
+                    ACL_MEMCPY_DEVICE_TO_DEVICE, stream), "k_head");
+            }
+        }
+        {
+            ProfileScope _p("attn.gather_v", stream);
+            check_acl(aclrtMemsetAsync(v_head.data(), v_head.size_bytes(), 0,
+                                       v_head.size_bytes(), stream), "v_head zero");
+            for (int64_t t = 0; t < context; ++t) {
+                check_acl(aclrtMemcpyAsync(
+                    static_cast<uint8_t*>(v_head.data()) + t * head_bytes,
+                    head_bytes,
+                    static_cast<const uint8_t*>(v_cache.data()) + t * num_kv_heads * head_bytes + kv_h * head_bytes,
+                    head_bytes,
+                    ACL_MEMCPY_DEVICE_TO_DEVICE, stream), "v_head");
+            }
         }
 
-        // scores [1, bucket] = q @ k^T, then scale + pad-mask, then softmax
-        matmul_b_transposed(q_vec, k_head, scores, stream);
+        for (int64_t g = 0; g < group_size; ++g) {
+            const int64_t q_h = kv_h * group_size + g;
 
-        AclTensorHandle hs;
-        make_acl_tensor(scores, hs);
-        aclScalar* scale_scalar = aclCreateScalar(&scale, ACL_FLOAT);
-        uint64_t ws_size = 0;
-        aclOpExecutor* executor = nullptr;
-        check_acl(aclnnMulsGetWorkspaceSize(hs.tensor, scale_scalar, hs.tensor, &ws_size, &executor), "muls ws");
-        run_op("aclnnMuls", ws_size, executor, stream, aclnnMuls);
-        aclDestroyScalar(scale_scalar);
+            // q_vec: [1, head_dim]
+            {
+                ProfileScope _p("attn.gather_q", stream);
+                check_acl(aclrtMemcpyAsync(q_vec.data(), head_bytes,
+                         static_cast<const uint8_t*>(query.data()) + q_h * head_bytes,
+                         head_bytes, ACL_MEMCPY_DEVICE_TO_DEVICE, stream), "q_vec");
+            }
 
-        add(scores, pad_mask, masked_scores, stream);
-        softmax_last_dim(masked_scores, masked_scores, stream);
+            // scores [1, bucket] = q @ k^T, then scale + pad-mask, then softmax
+            {
+                ProfileScope _p("attn.qk_softmax", stream);
+                matmul_b_transposed(q_vec, k_head, scores, stream);
 
-        // v_head: [bucket, head_dim] — zero-pad, then fill real rows
-        check_acl(aclrtMemsetAsync(v_head.data(), v_head.size_bytes(), 0,
-                                   v_head.size_bytes(), stream), "v_head zero");
-        for (int64_t t = 0; t < context; ++t) {
-            check_acl(aclrtMemcpyAsync(
-                static_cast<uint8_t*>(v_head.data()) + t * head_bytes,
-                head_bytes,
-                static_cast<const uint8_t*>(v_cache.data()) + t * num_kv_heads * head_bytes + kv_h * head_bytes,
-                head_bytes,
-                ACL_MEMCPY_DEVICE_TO_DEVICE, stream), "v_head");
+                AclTensorHandle hs;
+                make_acl_tensor(scores, hs);
+                aclScalar* scale_scalar = aclCreateScalar(&scale, ACL_FLOAT);
+                uint64_t ws_size = 0;
+                aclOpExecutor* executor = nullptr;
+                check_acl(aclnnMulsGetWorkspaceSize(hs.tensor, scale_scalar, hs.tensor, &ws_size, &executor), "muls ws");
+                run_op("aclnnMuls", ws_size, executor, stream, aclnnMuls);
+                aclDestroyScalar(scale_scalar);
+
+                add(scores, pad_mask, masked_scores, stream);
+                softmax_last_dim(masked_scores, masked_scores, stream);
+            }
+
+            // out_vec [1, head_dim] = masked_scores @ v_head
+            {
+                ProfileScope _p("attn.av_matmul", stream);
+                matmul(masked_scores, v_head, out_vec, stream);
+            }
+
+            // scatter to final output
+            {
+                ProfileScope _p("attn.scatter", stream);
+                check_acl(aclrtMemcpyAsync(
+                    static_cast<uint8_t*>(out.data()) + q_h * head_bytes,
+                    head_bytes,
+                    out_vec.data(), head_bytes,
+                    ACL_MEMCPY_DEVICE_TO_DEVICE, stream), "out_vec");
+            }
         }
-
-        // out_vec [1, head_dim] = masked_scores @ v_head
-        matmul(masked_scores, v_head, out_vec, stream);
-
-        // scatter to final output
-        check_acl(aclrtMemcpyAsync(
-            static_cast<uint8_t*>(out.data()) + q_h * head_bytes,
-            head_bytes,
-            out_vec.data(), head_bytes,
-            ACL_MEMCPY_DEVICE_TO_DEVICE, stream), "out_vec");
     }
 
     check_acl(aclrtSynchronizeStream(stream), "incre_flash_attention sync");

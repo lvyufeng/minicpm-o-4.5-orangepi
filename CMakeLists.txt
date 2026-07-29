@@ -30,6 +30,7 @@ add_library(minicpmo_engine
   src/csrc/lib/vision.cpp
   src/csrc/lib/audio_encoder.cpp
   src/csrc/lib/audio_decoder.cpp
+  src/csrc/lib/profiling.cpp
 )
 
 target_include_directories(minicpmo_engine PUBLIC
