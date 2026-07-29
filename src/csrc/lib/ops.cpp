@@ -421,6 +421,19 @@ void incre_flash_attention(const Tensor& query,
     pad_mask.allocate();
     pad_mask.copy_from_host(mask_host.data(), static_cast<size_t>(bucket) * sizeof(uint16_t));
 
+    // Allocate all per-head scratch tensors ONCE outside the loop and reuse
+    // them across all num_q_heads iterations. aclrtMalloc/Free are expensive
+    // (unified-memory allocator round-trip); allocating 6 tensors per head
+    // inside the loop meant num_q_heads * 6 = 192 malloc+free pairs per layer,
+    // ~6912 across all 36 layers, per generated token. Matches the pattern
+    // already used in decoder_layer.cpp's prefill attention loop.
+    Tensor q_vec({1, head_dim}, DType::Float16); q_vec.allocate();
+    Tensor k_head({bucket, head_dim}, DType::Float16); k_head.allocate();
+    Tensor v_head({bucket, head_dim}, DType::Float16); v_head.allocate();
+    Tensor scores({1, bucket}, DType::Float16); scores.allocate();
+    Tensor masked_scores({1, bucket}, DType::Float16); masked_scores.allocate();
+    Tensor out_vec({1, head_dim}, DType::Float16); out_vec.allocate();
+
     // All async memcpys are on `stream`; matmul/softmax ops are also enqueued
     // on the same stream and execute in submission order, so no per-iteration
     // sync is needed. Single sync at function end.
@@ -428,15 +441,11 @@ void incre_flash_attention(const Tensor& query,
         const int64_t kv_h = q_h / group_size;
 
         // q_vec: [1, head_dim]
-        Tensor q_vec({1, head_dim}, DType::Float16);
-        q_vec.allocate();
         check_acl(aclrtMemcpyAsync(q_vec.data(), head_bytes,
                  static_cast<const uint8_t*>(query.data()) + q_h * head_bytes,
                  head_bytes, ACL_MEMCPY_DEVICE_TO_DEVICE, stream), "q_vec");
 
         // k_head: [bucket, head_dim] — zero-pad, then fill real rows
-        Tensor k_head({bucket, head_dim}, DType::Float16);
-        k_head.allocate();
         check_acl(aclrtMemsetAsync(k_head.data(), k_head.size_bytes(), 0,
                                    k_head.size_bytes(), stream), "k_head zero");
         for (int64_t t = 0; t < context; ++t) {
@@ -449,8 +458,6 @@ void incre_flash_attention(const Tensor& query,
         }
 
         // scores [1, bucket] = q @ k^T, then scale + pad-mask, then softmax
-        Tensor scores({1, bucket}, DType::Float16);
-        scores.allocate();
         matmul_b_transposed(q_vec, k_head, scores, stream);
 
         AclTensorHandle hs;
@@ -462,14 +469,10 @@ void incre_flash_attention(const Tensor& query,
         run_op("aclnnMuls", ws_size, executor, stream, aclnnMuls);
         aclDestroyScalar(scale_scalar);
 
-        Tensor masked_scores({1, bucket}, DType::Float16);
-        masked_scores.allocate();
         add(scores, pad_mask, masked_scores, stream);
         softmax_last_dim(masked_scores, masked_scores, stream);
 
         // v_head: [bucket, head_dim] — zero-pad, then fill real rows
-        Tensor v_head({bucket, head_dim}, DType::Float16);
-        v_head.allocate();
         check_acl(aclrtMemsetAsync(v_head.data(), v_head.size_bytes(), 0,
                                    v_head.size_bytes(), stream), "v_head zero");
         for (int64_t t = 0; t < context; ++t) {
@@ -482,8 +485,6 @@ void incre_flash_attention(const Tensor& query,
         }
 
         // out_vec [1, head_dim] = masked_scores @ v_head
-        Tensor out_vec({1, head_dim}, DType::Float16);
-        out_vec.allocate();
         matmul(masked_scores, v_head, out_vec, stream);
 
         // scatter to final output
