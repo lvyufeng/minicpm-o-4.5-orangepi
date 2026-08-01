@@ -12,6 +12,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace minicpmo {
 
@@ -78,35 +79,120 @@ void copy_tensor(const Tensor& src, Tensor& dst, aclrtStream stream) {
 
 // Load a 2D matmul weight stored as [N, K] in safetensors and return it as
 // [K, N] (natural layout for our cube matmul fast path). Cube kernel beats
-// aclnnMm 2-7x at M=1 for the shapes we hit at decode time; the host wrapper
-// `matmul_b_transposed` falls back to aclnnMm for shapes the cube can't take.
-// Keeps original layout for shapes the cube fast-path can't accelerate so
-// memory and model-load time aren't wasted on a transpose that won't help.
+// aclnnMm 2.1-2.7x at M=1 for the shapes we hit at decode time; the host
+// wrapper `matmul_b_transposed` falls back to aclnnMm for shapes the cube
+// can't take, so pre-transposing is always safe even if the cube op later
+// rejects a particular shape.
+//
+// The transpose runs once per weight at model-load time, on the host, using
+// 64x64 blocks (the naive row-major double loop was cache-hostile enough at
+// [4096,12288] scale to noticeably slow down loading -- reading N contiguous
+// rows while writing K scattered columns thrashes the cache on every element
+// for large K; blocking keeps both the read and write access patterns
+// mostly sequential within an L1-sized tile).
 Tensor load_matmul_weight_transposed(WeightsIndex& index, int layer, const std::string& suffix) {
     Tensor src = load_layer_weight(index, layer, suffix);
     if (src.shape().size() != 2) {
         throw std::runtime_error("matmul weight " + suffix + " expected 2D");
     }
-    // TEMPORARY: Skip transpose to avoid slow host copy during model loading
-    // TODO: Implement device-side transpose or load pre-transposed weights
-    return src;
+    if (src.dtype() != DType::Float16) {
+        return src;  // cube fast-path is fp16-only; keep other dtypes as-is
+    }
+    const int64_t N = src.shape()[0];
+    const int64_t K = src.shape()[1];
+    static const bool nz_ok = [] {
+        const char* e = std::getenv("MINICPM_NO_NZ");
+        return !(e && e[0] == '1');
+    }();
+    if (N == K && !(nz_ok && fractal_nz_compatible(K, N))) {
+        // matmul_b_transposed disambiguates [N,K] (legacy) vs [K,N] (natural)
+        // purely by shape, which is undecidable when they're equal (e.g.
+        // q_proj/o_proj at 4096x4096). Transposing here would make it silently
+        // compute x @ W instead of x @ W^T for those weights. Leave square
+        // weights in their original [N,K] layout -- they fall back to the
+        // existing, correct aclnnMm path.
+        //
+        // This does not apply to the FRACTAL_NZ packing below: an NZ weight
+        // carries an explicit format flag, so it is recognized as logical
+        // [K, N] without relying on shape, and square weights can use it too.
+        return src;
+    }
 
-    // const int64_t N = src.shape()[0];
-    // const int64_t K = src.shape()[1];
-    // if (N > 16384 || (N % 128) != 0) {
-    //     return src;  // cube fast-path doesn't apply; keep [N, K]
-    // }
-    // std::vector<uint16_t> hostNK(static_cast<size_t>(N) * K);
-    // src.copy_to_host(hostNK.data(), hostNK.size() * sizeof(uint16_t));
-    // std::vector<uint16_t> hostKN(static_cast<size_t>(K) * N);
-    // for (int64_t n = 0; n < N; ++n) {
-    //     for (int64_t k = 0; k < K; ++k) {
-    //         hostKN[k * N + n] = hostNK[n * K + k];
-    //     }
-    // }
-    // Tensor dst({K, N}, DType::Float16);
-    // dst.copy_from_host(hostKN.data(), hostKN.size() * sizeof(uint16_t));
-    // return dst;
+    std::vector<uint16_t> hostNK(static_cast<size_t>(N) * static_cast<size_t>(K));
+    src.copy_to_host(hostNK.data(), hostNK.size() * sizeof(uint16_t));
+    // Release the source's device memory now that its bytes are on the host.
+    // Host and device share the same 23 GB on this SoC and the 10.4 GB of
+    // weights leaves little headroom, so don't hold both copies.
+    src = Tensor();
+
+    // Pack straight from [N, K] into the Cube's FRACTAL_NZ tiling when the
+    // shape allows, skipping the intermediate [K, N] buffer entirely.
+    // aclnnMm otherwise builds this tiling itself on EVERY call at M < 16,
+    // through a workspace the size of the whole weight (101.19 MB for
+    // 4096x12288), which is what made decode.mlp cost 43 ms. Pre-packed, the
+    // 36-layer cycling MLP drops from 43.08 to 16.49 ms. Results are
+    // bit-identical; see tests/test_matmul_m1_pad.cpp.
+    //
+    // Set MINICPM_NO_NZ=1 to keep plain ND.
+    static const bool nz_disabled = [] {
+        const char* e = std::getenv("MINICPM_NO_NZ");
+        return e && e[0] == '1';
+    }();
+    if (!nz_disabled && fractal_nz_compatible(K, N)) {
+        Tensor dst({K, N}, DType::Float16);
+        dst.allocate();
+        dst.set_format(Format::FractalNz);
+
+        // NZ storage is [N/16, K/16, 16, 16], so all bytes for one group of 16
+        // output columns are CONTIGUOUS: group nb occupies elements
+        // [nb*K*16, (nb+1)*K*16). That lets the packing be streamed one group at
+        // a time, keeping host staging at K*16 elements (128 KB at K=4096)
+        // instead of a second full ~100 MB buffer.
+        const size_t group_elems = static_cast<size_t>(K) * 16u;
+        std::vector<uint16_t> group(group_elems);
+        for (int64_t nb = 0; nb < N / 16; ++nb) {
+            std::fill(group.begin(), group.end(), uint16_t{0});
+            for (int64_t n_in = 0; n_in < 16; ++n_in) {
+                const int64_t n = nb * 16 + n_in;
+                const uint16_t* src_row =
+                    &hostNK[static_cast<size_t>(n) * static_cast<size_t>(K)];
+                for (int64_t k = 0; k < K; ++k) {
+                    group[static_cast<size_t>(k / 16) * 256u +
+                          static_cast<size_t>(k % 16) * 16u +
+                          static_cast<size_t>(n_in)] = src_row[k];
+                }
+            }
+            check_acl(aclrtMemcpy(
+                          static_cast<uint8_t*>(dst.data()) +
+                              static_cast<size_t>(nb) * group_elems * sizeof(uint16_t),
+                          group_elems * sizeof(uint16_t),
+                          group.data(), group_elems * sizeof(uint16_t),
+                          ACL_MEMCPY_HOST_TO_DEVICE),
+                      "NZ pack group upload");
+        }
+        return dst;
+    }
+
+    std::vector<uint16_t> hostKN(static_cast<size_t>(K) * static_cast<size_t>(N));
+
+    constexpr int64_t kBlock = 64;
+    for (int64_t n0 = 0; n0 < N; n0 += kBlock) {
+        const int64_t n1 = std::min(n0 + kBlock, N);
+        for (int64_t k0 = 0; k0 < K; k0 += kBlock) {
+            const int64_t k1 = std::min(k0 + kBlock, K);
+            for (int64_t n = n0; n < n1; ++n) {
+                const uint16_t* src_row = &hostNK[static_cast<size_t>(n) * static_cast<size_t>(K)];
+                for (int64_t k = k0; k < k1; ++k) {
+                    hostKN[static_cast<size_t>(k) * static_cast<size_t>(N) + static_cast<size_t>(n)] = src_row[k];
+                }
+            }
+        }
+    }
+
+    Tensor dst({K, N}, DType::Float16);
+    dst.allocate();
+    dst.copy_from_host(hostKN.data(), hostKN.size() * sizeof(uint16_t));
+    return dst;
 }
 
 std::string layer_base(int layer, const std::string& suffix) {

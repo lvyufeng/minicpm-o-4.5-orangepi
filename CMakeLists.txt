@@ -11,9 +11,9 @@ set(ASCEND_TOOLKIT_ROOT "/usr/local/Ascend/ascend-toolkit/latest/aarch64-linux"
     CACHE PATH "Ascend toolkit root")
 
 # Where the custom_opp .run installer was extracted. Defaults to
-# `${CMAKE_SOURCE_DIR}/custom_opp_install/vendors/customize` (the location
+# `${CMAKE_SOURCE_DIR}/custom_opp/vendors/customize` (the location
 # scripts/install_custom_ops.sh uses); override with -DCUSTOM_OPP_VENDOR=...
-set(CUSTOM_OPP_VENDOR "${CMAKE_SOURCE_DIR}/custom_opp_install/vendors/customize"
+set(CUSTOM_OPP_VENDOR "${CMAKE_SOURCE_DIR}/custom_opp/vendors/customize"
     CACHE PATH "Custom OPP vendor root (output of custom_opp .run installer)")
 
 set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type")

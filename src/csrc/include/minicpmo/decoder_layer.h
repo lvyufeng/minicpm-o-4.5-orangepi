@@ -142,15 +142,50 @@ void linear_attention_decoder_layer(const Tensor& hidden,
                                     Tensor& out,
                                     aclrtStream stream);
 
+// Persistent scratch buffers for `full_attention_decoder_layer_step`. Sized
+// and allocated once on the first step call and reused on every subsequent
+// call, instead of the step function allocating ~20 fresh Tensors per call.
+// This matters on this platform: benchmarking showed that once a large
+// amount of device memory is resident (e.g. the model's weights), *newly*
+// allocated buffers are backed by memory that the AI Core reads/writes ~4-5x
+// slower than memory backing pre-existing allocations, even for identical
+// shapes and identical actual data. Reusing buffers avoids paying that cost
+// on every decode step.
+struct FullAttentionStepScratch {
+    bool ready{false};
+    Tensor normed, q_full, k_full, v_full;
+    Tensor normed_i8, normed_scale;
+    Tensor q_only, q_gate;
+    Tensor q_heads, k_heads, q_normed, k_normed, q_rope, k_rope, k_row;
+    Tensor attn_out, gate_sig, attn_gated, attn_proj, after_attn, mlp_in;
+    Tensor gate, up, gated, mlp_out;
+    Tensor mlp_i8, mlp_scale;
+};
+
+// Persistent scratch buffers for `linear_attention_decoder_layer_step`. See
+// `FullAttentionStepScratch` for why this exists.
+struct LinearAttentionStepScratch {
+    bool ready{false};
+    Tensor normed, qkv, z, a, b;
+    Tensor normed_i8, normed_scale;
+    Tensor conv_input, conv_last, conv_all, mixed;
+    Tensor beta_dev, decay_dev, core_dev, scratch_buf, z_silu, gated;
+    Tensor attn_proj, after_attn, mlp_in;
+    Tensor gate, up, gated_mlp, mlp_out;
+    Tensor mlp_i8, mlp_scale;
+};
+
 // Single-token decode caches and entry points.
 struct FullAttentionLayerCache {
     Tensor k_cache;  // [max_seq, num_kv_heads * head_dim] fp16, post-RoPE K rows
     Tensor v_cache;  // [max_seq, num_kv_heads * head_dim] fp16, V rows
+    FullAttentionStepScratch scratch;
 };
 
 struct LinearAttentionLayerCache {
     Tensor conv_buf;          // [3, 6144] fp16, last 3 conv inputs (pre-conv qkv projection)
     Tensor recurrent_state;   // [16, 128, 128] fp32, gated delta rule state
+    LinearAttentionStepScratch scratch;
 };
 
 // Multi-token linear-attention forward that advances cache.conv_buf and

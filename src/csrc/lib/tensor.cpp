@@ -105,4 +105,34 @@ size_t Tensor::size_bytes() const {
     return numel() * dtype_size(dtype_);
 }
 
+// FRACTAL_NZ is a 16x16 fractal tiling: the logical [K, N] matrix is cut into
+// 16x16 blocks, blocks are ordered N-major then K, and within a block the 256
+// elements are row-major over (k, n). Total element count is unchanged, so
+// size_bytes() stays valid for an NZ tensor.
+std::vector<int64_t> fractal_nz_storage_dims(int64_t K, int64_t N) {
+    return {N / 16, K / 16, 16, 16};
+}
+
+bool fractal_nz_compatible(int64_t K, int64_t N) {
+    return K > 0 && N > 0 && (K % 16 == 0) && (N % 16 == 0);
+}
+
+void pack_fractal_nz(const uint16_t* src_kn, uint16_t* dst_nz, int64_t K, int64_t N) {
+    const int64_t kBlocks = K / 16;
+    // Walk the SOURCE sequentially (one contiguous [K, N] row at a time) and
+    // scatter into the destination. The reverse -- walking the destination in
+    // order -- would read a strided column of the source for every block and
+    // thrash the cache at [4096, 12288] scale.
+    for (int64_t k = 0; k < K; ++k) {
+        const uint16_t* row = src_kn + static_cast<size_t>(k) * static_cast<size_t>(N);
+        const size_t k_blk = static_cast<size_t>(k / 16);
+        const size_t k_in = static_cast<size_t>(k % 16);
+        for (int64_t n = 0; n < N; ++n) {
+            const size_t blk = (static_cast<size_t>(n / 16) * static_cast<size_t>(kBlocks)) + k_blk;
+            dst_nz[blk * 256u + k_in * 16u + static_cast<size_t>(n % 16)] =
+                row[static_cast<size_t>(n)];
+        }
+    }
+}
+
 }  // namespace minicpmo

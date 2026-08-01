@@ -3,6 +3,7 @@
 #include "minicpmo/profiling.h"
 
 #include <cstdint>
+#include <cstdlib>
 #include <stdexcept>
 #include <vector>
 
@@ -99,14 +100,24 @@ struct AclTensorHandle {
 
 void make_acl_tensor(const Tensor& t, AclTensorHandle& h) {
     h.view_dims = t.shape();
-    h.storage_dims = t.shape();
     h.strides.assign(t.shape().size(), 1);
     for (int i = static_cast<int>(t.shape().size()) - 2; i >= 0; --i) {
         h.strides[i] = h.strides[i + 1] * t.shape()[i + 1];
     }
+    // An NZ tensor keeps its logical [K, N] view and strides but declares the
+    // fractal storage shape, which is how aclnnMm learns it needs no reformat.
+    // ACL_FORMAT_FRACTAL_NZ is 29; format 50 (FRACTAL_NZ_C0_16) is accepted by
+    // the API but computes wrong results for this layout, so it is not used.
+    aclFormat format = ACL_FORMAT_ND;
+    if (t.format() == Format::FractalNz && t.shape().size() == 2) {
+        h.storage_dims = fractal_nz_storage_dims(t.shape()[0], t.shape()[1]);
+        format = ACL_FORMAT_FRACTAL_NZ;
+    } else {
+        h.storage_dims = t.shape();
+    }
     h.tensor = aclCreateTensor(
         h.view_dims.data(), h.view_dims.size(), to_acl_dtype(t.dtype()),
-        h.strides.data(), 0, ACL_FORMAT_ND,
+        h.strides.data(), 0, format,
         h.storage_dims.data(), h.storage_dims.size(),
         t.data());
     if (h.tensor == nullptr) {
@@ -167,8 +178,12 @@ void matmul_b_transposed(const Tensor& a, const Tensor& b, Tensor& out, aclrtStr
 
     // B can be either [N, K] (legacy matmul_b_transposed convention) or [K, N]
     // (pre-transposed for cube fast path). When N != K only one matches.
-    const bool bIsTransposed = (b.shape()[1] == K);  // storage [N, K]
-    const bool bIsNatural    = (b.shape()[0] == K) && (b.shape()[1] != K);  // [K, N], unambiguous
+    // A FractalNz B is always logically [K, N] -- the packing was built that
+    // way -- which also resolves the square case that shape alone cannot.
+    const bool bIsNz = (b.format() == Format::FractalNz);
+    const bool bIsTransposed = !bIsNz && (b.shape()[1] == K);  // storage [N, K]
+    const bool bIsNatural    = bIsNz ||
+                               ((b.shape()[0] == K) && (b.shape()[1] != K));  // [K, N]
     if (!bIsTransposed && !bIsNatural) {
         throw std::runtime_error("matmul_b_transposed K dim mismatch");
     }
@@ -177,19 +192,67 @@ void matmul_b_transposed(const Tensor& a, const Tensor& b, Tensor& out, aclrtStr
         throw std::runtime_error("matmul_b_transposed out shape mismatch");
     }
 
-    // Cube fast path disabled due to error 161001 on Ascend 310B during warmup.
-    // The custom op exists and is linked, but aclnnMatmulCubeCustomGetWorkspaceSize
-    // returns error 161001 when called with M=1, K=4096, N=4096/12288 decode shapes.
-    // Root cause unknown - may be unsupported shape or missing kernel variant.
-    // Keeping standard aclnnMm path for now.
-    (void)bIsNatural;  // Suppress unused warning
+    // Custom cube path — DISABLED by default; it is a pessimization in
+    // production. It is numerically correct (the old "161001" failure was a
+    // bug in the reference-data generator, not the kernel), and it does beat
+    // aclnnMm ~2x when the same weights are re-read every call. But that is
+    // a cache-hit artifact: decode walks 36 *distinct* layers per token, so
+    // every weight read is cold. Measured on the real model, cycling all 36
+    // layers' MLP (bench_inproc_layer_cycling):
+    //     custom cube : 20.55 ms same-layer -> 51.27 ms cycling  (2.50x)
+    //     aclnnMm     : 40.15 ms same-layer -> 42.90 ms cycling  (1.07x)
+    // The auto-selected tiling (baseN=256, baseK=64, stepKb=4) reads only
+    // 512 B out of each 24 KB row of the [K, N] weight, strided 64x across K,
+    // so it collapses on cold data while aclnnMm degrades barely at all.
+    // Kept behind MINICPM_USE_CUBE=1 for tiling experiments. It only accepts
+    // B in natural [K, N] layout (no on-device transpose), which production
+    // weights already have from load_matmul_weight_transposed.
+    // Opt-in only: set MINICPM_USE_CUBE=1 to route through the custom cube op.
+    // It is OFF by default because it loses on the production access pattern
+    // (see the comment block below).
+    static const bool cube_enabled = [] {
+        const char* e = std::getenv("MINICPM_USE_CUBE");
+        return e && e[0] == '1';
+    }();
+    if (cube_enabled && bIsNatural && a.dtype() == DType::Float16 &&
+        b.dtype() == DType::Float16 && out.dtype() == DType::Float16) {
+        AclTensorHandle ca, cb, co;
+        make_acl_tensor(a, ca);
+        make_acl_tensor(b, cb);
+        make_acl_tensor(out, co);
+        uint64_t cube_ws_size = 0;
+        aclOpExecutor* cube_executor = nullptr;
+        auto cube_ret = aclnnMatmulCubeCustomGetWorkspaceSize(ca.tensor, cb.tensor, co.tensor,
+                                                              &cube_ws_size, &cube_executor);
+        if (cube_ret == 0) {
+            void* cube_workspace = nullptr;
+            if (cube_ws_size > 0) {
+                check_acl(aclrtMalloc(&cube_workspace, cube_ws_size, ACL_MEM_MALLOC_HUGE_FIRST),
+                          "aclrtMalloc cube workspace");
+            }
+            auto cube_ret2 = aclnnMatmulCubeCustom(cube_workspace, cube_ws_size, cube_executor, stream);
+            if (cube_ret2 == 0) {
+                auto cube_sync = aclrtSynchronizeStream(stream);
+                if (cube_workspace) aclrtFree(cube_workspace);
+                check_acl(cube_sync, "aclrtSynchronizeStream matmul_b_transposed (cube)");
+                return;
+            }
+            if (cube_workspace) aclrtFree(cube_workspace);
+            // Launch failed after a successful GetWorkspaceSize -- fall
+            // through to the aclnnMm path below rather than throwing.
+        }
+        // GetWorkspaceSize rejected the shape -- fall through to aclnnMm.
+    }
 
     // CANN's precompiled MatMulV2_FP16 kernel binary doesn't cover the
     // (M >= 64, K > 4096) corner — kernel lookup returns "kernel pointer null"
     // (errno 361001). Empirically M=32 works at any K and M=1024 works at
     // K<=4096. For larger K we tile along the K dim, accumulate partials.
+    // Not applicable to a FractalNz B: this slices B along K by byte offset,
+    // which assumes row-major storage. NZ interleaves K inside 16x16 blocks,
+    // so a contiguous byte range is not a K range.
     constexpr int64_t kKTile = 4096;
-    if (M >= 64 && K > kKTile && a.dtype() == DType::Float16 &&
+    if (!bIsNz && M >= 64 && K > kKTile && a.dtype() == DType::Float16 &&
         b.dtype() == DType::Float16 && out.dtype() == DType::Float16) {
         const int64_t num_chunks = (K + kKTile - 1) / kKTile;
         Tensor accum({M, N}, DType::Float16); accum.allocate();
@@ -253,6 +316,20 @@ void matmul_b_transposed(const Tensor& a, const Tensor& b, Tensor& out, aclrtStr
         check_acl(aclrtSynchronizeStream(stream), "matmul K-tile sync");
         return;
     }
+
+    // NOTE ON M<16: aclnnMm requests a workspace exactly the size of B and
+    // reformats the whole ND weight into the Cube's fractal tiling on every
+    // call below M=16 (101.19 MB for 4096x12288 fp16; 0 at M>=16). Cost is flat
+    // from M=1 to M=8 (12.3 ms) then drops to 7.8 ms at M=16, so it is the
+    // weight pass, not arithmetic. That reformat is why decode looked
+    // memory-bound at ~7 GB/s while plain aclrtMemcpyAsync sustains 22.1 GB/s
+    // on the same buffers, and why halving the bytes with int8 made it SLOWER.
+    //
+    // It is now avoided at the source: weights are packed into FRACTAL_NZ once
+    // at load time (see load_matmul_weight_transposed), so aclnnMm gets the
+    // layout it wants and the workspace drops to 0.53 MB. Padding M to 16 was
+    // also tried and rejected -- 1.58x faster on synthetic weights but 24%
+    // SLOWER on the real model (53.52 vs 43.08 ms cycling 36 layers).
 
     AclTensorHandle ha, hb, ho;
     make_acl_tensor(a, ha);
