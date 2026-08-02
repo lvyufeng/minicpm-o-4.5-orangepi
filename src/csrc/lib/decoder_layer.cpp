@@ -147,30 +147,6 @@ void split_q_gate(const Tensor& src, int64_t heads, int64_t head_dim,
 }
 
 
-void pack_heads_to_row(const Tensor& src_heads, Tensor& dst_row, int64_t heads,
-                       int64_t head_dim, aclrtStream stream) {
-    const size_t elem = dtype_size(src_heads.dtype());
-    const size_t head_bytes = static_cast<size_t>(head_dim) * elem;
-    auto* s = static_cast<const uint8_t*>(src_heads.data());
-    auto* d = static_cast<uint8_t*>(dst_row.data());
-    for (int64_t h = 0; h < heads; ++h) {
-        check_acl(aclrtMemcpyAsync(d + static_cast<size_t>(h) * head_bytes, head_bytes,
-                                   s + static_cast<size_t>(h) * head_bytes, head_bytes,
-                                   ACL_MEMCPY_DEVICE_TO_DEVICE, stream),
-                  "pack_heads_to_row");
-    }
-    check_acl(aclrtSynchronizeStream(stream), "pack_heads_to_row sync");
-}
-
-void copy_tensor_to_cache_row(const Tensor& src, Tensor& cache, int64_t row, aclrtStream stream) {
-    const size_t row_bytes = static_cast<size_t>(cache.shape()[1]) * dtype_size(cache.dtype());
-    auto* d = static_cast<uint8_t*>(cache.data()) + static_cast<size_t>(row) * row_bytes;
-    check_acl(aclrtMemcpyAsync(d, row_bytes, src.data(), row_bytes,
-                               ACL_MEMCPY_DEVICE_TO_DEVICE, stream),
-              "copy_tensor_to_cache_row");
-    check_acl(aclrtSynchronizeStream(stream), "copy_tensor_to_cache_row sync");
-}
-
 void copy_cache_head_to_seq(const Tensor& cache, int64_t head, int64_t heads_per_token,
                             int64_t head_dim, int64_t rows, Tensor& dst_seq,
                             aclrtStream stream) {
@@ -369,10 +345,14 @@ void run_full_attention_core(const Tensor& hidden,
         throw std::runtime_error("decoder layer row_to_t size must match sequence length");
     }
     if (cache != nullptr) {
-        if (cache->k_cache.shape()[1] != KVDim || cache->v_cache.shape()[1] != KVDim) {
-            throw std::runtime_error("full attention cache KV dim mismatch");
+        // Cache is [num_kv_heads, max_seq, head_dim]
+        if (cache->k_cache.shape().size() != 3 ||
+            cache->k_cache.shape()[0] != NumKVHeads ||
+            cache->k_cache.shape()[2] != HeadDim ||
+            cache->v_cache.shape() != cache->k_cache.shape()) {
+            throw std::runtime_error("full attention cache shape mismatch");
         }
-        if (cache_offset + T > cache->k_cache.shape()[0]) {
+        if (cache_offset + T > cache->k_cache.shape()[1]) {
             throw std::runtime_error("full attention cache overflow");
         }
     }
@@ -423,33 +403,35 @@ void run_full_attention_core(const Tensor& hidden,
     apply_rope_partial(k_normed, cos_table, sin_table, k_row_to_t, config.rotary_dim, k_rope, stream);
 
     if (cache != nullptr) {
-        // Pack k_rope [T*NumKVHeads, HeadDim] back to [T, KVDim] then write rows [cache_offset, cache_offset+T).
+        // Cache is now [num_kv_heads, max_seq, head_dim]. Write K/V for timesteps
+        // [cache_offset, cache_offset+T) by scattering each head's T rows into its plane.
         const size_t elem = dtype_size(k_rope.dtype());
         const size_t head_bytes = static_cast<size_t>(HeadDim) * elem;
-        const size_t row_bytes = static_cast<size_t>(KVDim) * elem;
-        auto* src = static_cast<const uint8_t*>(k_rope.data());
-        auto* dst = static_cast<uint8_t*>(cache->k_cache.data());
-        for (int64_t t = 0; t < T; ++t) {
-            for (int64_t h = 0; h < NumKVHeads; ++h) {
-                check_acl(aclrtMemcpyAsync(dst + static_cast<size_t>(cache_offset + t) * row_bytes
-                                               + static_cast<size_t>(h) * head_bytes,
-                                           head_bytes,
-                                           src + static_cast<size_t>(t * NumKVHeads + h) * head_bytes,
-                                           head_bytes,
-                                           ACL_MEMCPY_DEVICE_TO_DEVICE, stream),
-                          "k_rope -> k_cache");
+        const size_t plane_stride = static_cast<size_t>(cache->k_cache.shape()[1] * HeadDim) * elem;
+
+        // k_rope is [T*NumKVHeads, HeadDim]; gather head h's T rows and write to plane h.
+        auto* k_src = static_cast<const uint8_t*>(k_rope.data());
+        auto* k_base = static_cast<uint8_t*>(cache->k_cache.data());
+        for (int64_t h = 0; h < NumKVHeads; ++h) {
+            auto* k_plane = k_base + h * plane_stride + static_cast<size_t>(cache_offset) * head_bytes;
+            for (int64_t t = 0; t < T; ++t) {
+                check_acl(aclrtMemcpyAsync(k_plane + t * head_bytes, head_bytes,
+                                           k_src + static_cast<size_t>(t * NumKVHeads + h) * head_bytes, head_bytes,
+                                           ACL_MEMCPY_DEVICE_TO_DEVICE, stream), "k prefill scatter");
             }
         }
-        // v_full is already [T, KVDim]; copy rows directly.
-        auto* vs = static_cast<const uint8_t*>(v_full.data());
-        auto* vd = static_cast<uint8_t*>(cache->v_cache.data());
-        for (int64_t t = 0; t < T; ++t) {
-            check_acl(aclrtMemcpyAsync(vd + static_cast<size_t>(cache_offset + t) * row_bytes,
-                                       row_bytes,
-                                       vs + static_cast<size_t>(t) * row_bytes,
-                                       row_bytes,
-                                       ACL_MEMCPY_DEVICE_TO_DEVICE, stream),
-                      "v_full -> v_cache");
+
+        // v_full is [T, NumKVHeads*HeadDim]; unpack and scatter each head's T rows.
+        auto* v_src = static_cast<const uint8_t*>(v_full.data());
+        auto* v_base = static_cast<uint8_t*>(cache->v_cache.data());
+        const size_t v_row_bytes = static_cast<size_t>(KVDim) * elem;
+        for (int64_t h = 0; h < NumKVHeads; ++h) {
+            auto* v_plane = v_base + h * plane_stride + static_cast<size_t>(cache_offset) * head_bytes;
+            for (int64_t t = 0; t < T; ++t) {
+                check_acl(aclrtMemcpyAsync(v_plane + t * head_bytes, head_bytes,
+                                           v_src + static_cast<size_t>(t) * v_row_bytes + h * head_bytes, head_bytes,
+                                           ACL_MEMCPY_DEVICE_TO_DEVICE, stream), "v prefill scatter");
+            }
         }
         check_acl(aclrtSynchronizeStream(stream), "kv cache write sync");
     }
@@ -944,8 +926,11 @@ DecodeState make_decode_state(int64_t max_seq_len,
     for (const auto& type : layer_types) {
         if (type == "full_attention") {
             FullAttentionLayerCache cache;
-            cache.k_cache = Tensor({max_seq_len, kv_dim}, DType::Float16);
-            cache.v_cache = Tensor({max_seq_len, kv_dim}, DType::Float16);
+            // Layout: [num_kv_heads, max_seq_len, head_dim] for contiguous per-head
+            // gather. Old layout [max_seq_len, kv_dim] required context-many memcpy
+            // calls per head; new layout needs one contiguous copy per head.
+            cache.k_cache = Tensor({full_config.num_kv_heads, max_seq_len, full_config.head_dim}, DType::Float16);
+            cache.v_cache = Tensor({full_config.num_kv_heads, max_seq_len, full_config.head_dim}, DType::Float16);
             cache.k_cache.allocate();
             cache.v_cache.allocate();
             check_acl(aclrtMemsetAsync(cache.k_cache.data(), cache.k_cache.size_bytes(), 0,
@@ -986,7 +971,7 @@ void full_attention_decoder_layer_step(const Tensor& hidden,
     if (hidden.shape()[0] != 1) {
         throw std::runtime_error("full_attention_decoder_layer_step hidden must be [1, H]");
     }
-    if (cache_len < 0 || cache_len >= cache.k_cache.shape()[0]) {
+    if (cache_len < 0 || cache_len >= cache.k_cache.shape()[1]) {
         throw std::runtime_error("full_attention_decoder_layer_step cache_len out of range");
     }
 
@@ -1017,7 +1002,10 @@ void full_attention_decoder_layer_step(const Tensor& hidden,
     }();
     const int64_t Context = cache_len + 1;
 
-    if (cache.k_cache.shape() != std::vector<int64_t>{cache.k_cache.shape()[0], KVDim} ||
+    // Cache is now [num_kv_heads, max_seq, head_dim]
+    if (cache.k_cache.shape().size() != 3 ||
+        cache.k_cache.shape()[0] != NumKVHeads ||
+        cache.k_cache.shape()[2] != HeadDim ||
         cache.v_cache.shape() != cache.k_cache.shape()) {
         throw std::runtime_error("full_attention_decoder_layer_step cache shape mismatch");
     }
@@ -1045,7 +1033,6 @@ void full_attention_decoder_layer_step(const Tensor& hidden,
         s.k_normed = Tensor({NumKVHeads, HeadDim}, DType::Float16); s.k_normed.allocate();
         s.q_rope = Tensor({NumQHeads, HeadDim}, DType::Float16); s.q_rope.allocate();
         s.k_rope = Tensor({NumKVHeads, HeadDim}, DType::Float16); s.k_rope.allocate();
-        s.k_row = Tensor({1, KVDim}, DType::Float16); s.k_row.allocate();
         s.attn_out = Tensor({1, QMainDim}, DType::Float16); s.attn_out.allocate();
         s.attn_proj = Tensor({1, Hidden}, DType::Float16); s.attn_proj.allocate();
         s.after_attn = Tensor({1, Hidden}, DType::Float16); s.after_attn.allocate();
@@ -1117,10 +1104,24 @@ void full_attention_decoder_layer_step(const Tensor& hidden,
         apply_rope_partial(k_normed, cos_table, sin_table, k_row_to_t, config.rotary_dim, k_rope, stream);
     }
 
-    Tensor& k_row = s.k_row;
-    pack_heads_to_row(k_rope, k_row, NumKVHeads, HeadDim, stream);
-    copy_tensor_to_cache_row(k_row, cache.k_cache, cache_len, stream);
-    copy_tensor_to_cache_row(v_full, cache.v_cache, cache_len, stream);
+    // Write K/V to cache at position cache_len. Cache is [num_kv_heads, max_seq, head_dim].
+    // k_rope/v_full are [1, num_kv_heads * head_dim]; scatter each head's slice into its plane.
+    const size_t head_bytes = static_cast<size_t>(HeadDim) * 2;  // fp16
+    const size_t plane_stride = static_cast<size_t>(cache.k_cache.shape()[1] * HeadDim) * 2;
+    for (int64_t h = 0; h < NumKVHeads; ++h) {
+        auto* k_dst = static_cast<uint8_t*>(cache.k_cache.data())
+                    + h * plane_stride + static_cast<size_t>(cache_len) * head_bytes;
+        auto* k_src = static_cast<const uint8_t*>(k_rope.data()) + h * head_bytes;
+        check_acl(aclrtMemcpyAsync(k_dst, head_bytes, k_src, head_bytes,
+                                   ACL_MEMCPY_DEVICE_TO_DEVICE, stream), "k to cache");
+
+        auto* v_dst = static_cast<uint8_t*>(cache.v_cache.data())
+                    + h * plane_stride + static_cast<size_t>(cache_len) * head_bytes;
+        auto* v_src = static_cast<const uint8_t*>(v_full.data()) + h * head_bytes;
+        check_acl(aclrtMemcpyAsync(v_dst, head_bytes, v_src, head_bytes,
+                                   ACL_MEMCPY_DEVICE_TO_DEVICE, stream), "v to cache");
+    }
+    check_acl(aclrtSynchronizeStream(stream), "decode k/v cache scatter sync");
 
     Tensor& attn_out = s.attn_out;
     const float attn_scale = 1.0f / std::sqrt(static_cast<float>(HeadDim));

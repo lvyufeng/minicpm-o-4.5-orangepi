@@ -156,7 +156,7 @@ struct FullAttentionStepScratch {
     Tensor normed, q_full, k_full, v_full;
     Tensor normed_i8, normed_scale;
     Tensor q_only, q_gate;
-    Tensor q_heads, k_heads, q_normed, k_normed, q_rope, k_rope, k_row;
+    Tensor q_heads, k_heads, q_normed, k_normed, q_rope, k_rope;
     Tensor attn_out, gate_sig, attn_gated, attn_proj, after_attn, mlp_in;
     Tensor gate, up, gated, mlp_out;
     Tensor mlp_i8, mlp_scale;

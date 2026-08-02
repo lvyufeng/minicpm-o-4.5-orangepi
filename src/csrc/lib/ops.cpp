@@ -125,6 +125,29 @@ void make_acl_tensor(const Tensor& t, AclTensorHandle& h) {
     }
 }
 
+// Build an arbitrary logical view over a tensor's storage: caller supplies the
+// view dims and element strides, so a transpose or a reshape costs no copy.
+// aclnnBatchMatMul accepts non-contiguous inputs, which is how q @ k^T avoids
+// materializing k^T. `storage_elems` is the total element count backing the
+// view, used as the declared 1-D storage shape.
+void make_acl_view(const Tensor& t,
+                   std::vector<int64_t> dims,
+                   std::vector<int64_t> strides,
+                   int64_t storage_elems,
+                   AclTensorHandle& h) {
+    h.view_dims = std::move(dims);
+    h.strides = std::move(strides);
+    h.storage_dims = {storage_elems};
+    h.tensor = aclCreateTensor(
+        h.view_dims.data(), h.view_dims.size(), to_acl_dtype(t.dtype()),
+        h.strides.data(), 0, ACL_FORMAT_ND,
+        h.storage_dims.data(), h.storage_dims.size(),
+        t.data());
+    if (h.tensor == nullptr) {
+        throw std::runtime_error("aclCreateTensor returned null (strided view)");
+    }
+}
+
 }  // namespace
 
 void matmul(const Tensor& a, const Tensor& b, Tensor& out, aclrtStream stream) {
@@ -426,7 +449,13 @@ void run_op(const char* name,
     }
     auto sync_ret = aclrtSynchronizeStream(stream);
     if (workspace) aclrtFree(workspace);
-    check_acl(sync_ret, "aclrtSynchronizeStream");
+    // Name the op here: an aicore fault surfaces asynchronously at whatever
+    // sync comes next, so a bare "aclrtSynchronizeStream failed" says nothing
+    // about which kernel actually faulted.
+    if (sync_ret != 0) {
+        throw std::runtime_error(std::string("sync after ") + name +
+                                 " failed with aclError=" + std::to_string(sync_ret));
+    }
 }
 
 void check_same_shape(const Tensor& a, const Tensor& b, const char* op) {
@@ -457,149 +486,152 @@ void incre_flash_attention(const Tensor& query,
     if (out.numel() != static_cast<size_t>(num_q_heads * head_dim)) {
         throw std::runtime_error("incre_flash_attention out numel mismatch");
     }
-    if (k_cache.shape().size() != 2 || k_cache.shape()[1] != num_kv_heads * head_dim) {
-        throw std::runtime_error("incre_flash_attention k_cache shape mismatch");
+    // Cache is now [num_kv_heads, max_seq, head_dim]
+    if (k_cache.shape().size() != 3 ||
+        k_cache.shape()[0] != num_kv_heads ||
+        k_cache.shape()[2] != head_dim ||
+        v_cache.shape() != k_cache.shape()) {
+        throw std::runtime_error("incre_flash_attention cache shape mismatch");
     }
-    if (v_cache.shape() != k_cache.shape()) {
-        throw std::runtime_error("incre_flash_attention v_cache shape mismatch");
-    }
-    if (context <= 0 || context > k_cache.shape()[0]) {
+    if (context <= 0 || context > k_cache.shape()[1]) {
         throw std::runtime_error("incre_flash_attention context out of range");
     }
 
-    // Fallback: compute attention per query head using basic operations.
-    // Since custom ops aren't supported (PromptFlashAttention returns 561103),
-    // implement with matmul + softmax.
+    // Attention is built from BatchMatMul + Muls + Add + Softmax because 310B
+    // has no fused attention kernel: IncreFlashAttention and
+    // PromptFlashAttention ship kernels only for 310p/910b/910_93 (see
+    // opp/built-in/op_impl/ai_core/tbe/config/), and PromptFlashAttention
+    // returns 561103 here.
     //
     // KEY PERFORMANCE ISSUE: CANN JIT compiles a new kernel binary for every
     // distinct (M, N, K) shape it sees. Without bucketing, context grows by 1
-    // every step (15, 16, 17, ...) so k_head[context, head_dim] and
-    // scores[1, context] are a fresh shape on every token, triggering a JIT
-    // miss each time. With 36 layers × 32 heads × ~5 ops each, a 30-token
-    // generation sees thousands of JIT compilations — ~17 s/token on cold cache.
+    // every step (15, 16, 17, ...) so the score shape is fresh on every token,
+    // triggering a JIT miss each time — a 30-token generation used to see
+    // thousands of compilations, ~17 s/token on a cold cache.
     //
-    // Fix: round context up to the nearest power-of-two bucket. Shapes seen by
-    // CANN are now {[1,128], [64,128], [1,64]} etc., compiled once per bucket
-    // and reused for all tokens in that bucket. Padding positions are zeroed in
-    // K/V and masked to -inf in the score tensor before softmax, so they
-    // contribute 0 to the output.
+    // Fix: round context up to the nearest power-of-two bucket, so CANN sees
+    // one shape per bucket and reuses it for every token in that bucket. The
+    // positions between context and bucket are masked to -inf before the
+    // softmax, so whatever the cache holds there cannot reach the output.
     static constexpr int64_t kBuckets[] = {16, 32, 64, 128, 256, 512, 1024, 2048, 4096};
+    const int64_t max_seq = k_cache.shape()[1];
     int64_t bucket = kBuckets[std::size(kBuckets) - 1];
     for (int64_t b : kBuckets) {
         if (b >= context) { bucket = b; break; }
     }
+    // The bucket is read straight out of the cache, so it cannot exceed the
+    // cache's own sequence dimension. context <= max_seq always, so clamping
+    // here only ever trims padding.
+    if (bucket > max_seq) bucket = max_seq;
 
-    const int64_t group_size = num_q_heads / num_kv_heads;
-    const size_t head_bytes = head_dim * 2;  // fp16
-
-    // Build padding mask [1, bucket]: 0x0000 (0.0) for real positions, 0xFBFF (-65504) for pads.
-    std::vector<uint16_t> mask_host(static_cast<size_t>(bucket), 0xFBFFu);  // -65504 in fp16
-    for (int64_t t = 0; t < context; ++t) mask_host[static_cast<size_t>(t)] = 0x0000u;
-    Tensor pad_mask({1, bucket}, DType::Float16);
-    pad_mask.allocate();
-    pad_mask.copy_from_host(mask_host.data(), static_cast<size_t>(bucket) * sizeof(uint16_t));
-
-    // Allocate all per-head scratch tensors ONCE outside the loop and reuse
-    // them across all num_q_heads iterations. aclrtMalloc/Free are expensive
-    // (unified-memory allocator round-trip); allocating 6 tensors per head
-    // inside the loop meant num_q_heads * 6 = 192 malloc+free pairs per layer,
-    // ~6912 across all 36 layers, per generated token. Matches the pattern
-    // already used in decoder_layer.cpp's prefill attention loop.
-    Tensor q_vec({1, head_dim}, DType::Float16); q_vec.allocate();
-    Tensor k_head({bucket, head_dim}, DType::Float16); k_head.allocate();
-    Tensor v_head({bucket, head_dim}, DType::Float16); v_head.allocate();
-    Tensor scores({1, bucket}, DType::Float16); scores.allocate();
-    Tensor masked_scores({1, bucket}, DType::Float16); masked_scores.allocate();
-    Tensor out_vec({1, head_dim}, DType::Float16); out_vec.allocate();
-
-    // All async memcpys are on `stream`; matmul/softmax ops are also enqueued
-    // on the same stream and execute in submission order, so no per-iteration
-    // sync is needed. Single sync at function end.
+    // Batch the whole attention over the KV-head dimension. GQA makes this
+    // exact: 32 query heads over 8 KV heads is [8, 4, head_dim], and the cache
+    // is already [num_kv_heads, max_seq, head_dim], so both sides share the
+    // same batch axis with no reshuffling.
     //
-    // Loop over KV heads in the outer loop and query heads within each GQA
-    // group in the inner loop, so k_head/v_head are gathered ONCE per KV
-    // head and reused across all `group_size` query heads that share it
-    // (group_size=4 here), instead of re-gathering the same KV head's rows
-    // redundantly for every query head. Profiling showed gather_k+gather_v
-    // cost as much as the qk/softmax math itself, so this cuts a real cost
-    // by ~4x. aclrtMemcpy2dAsync was tried to replace the per-timestep loop
-    // with a single strided copy, but it returns ACL_ERROR_INVALID_PARAM
-    // (100000) for D2D on this CANN build — consistent with the K-tiled
-    // matmul above, which found aclrtMemcpy2dAsync corrupts memory for D2D
-    // on this hardware/SDK. Per-row async memcpy remains the reliable path.
-    for (int64_t kv_h = 0; kv_h < num_kv_heads; ++kv_h) {
-        {
-            ProfileScope _p("attn.gather_k", stream);
-            check_acl(aclrtMemsetAsync(k_head.data(), k_head.size_bytes(), 0,
-                                       k_head.size_bytes(), stream), "k_head zero");
-            for (int64_t t = 0; t < context; ++t) {
-                check_acl(aclrtMemcpyAsync(
-                    static_cast<uint8_t*>(k_head.data()) + t * head_bytes,
-                    head_bytes,
-                    static_cast<const uint8_t*>(k_cache.data()) + t * num_kv_heads * head_bytes + kv_h * head_bytes,
-                    head_bytes,
-                    ACL_MEMCPY_DEVICE_TO_DEVICE, stream), "k_head");
-            }
-        }
-        {
-            ProfileScope _p("attn.gather_v", stream);
-            check_acl(aclrtMemsetAsync(v_head.data(), v_head.size_bytes(), 0,
-                                       v_head.size_bytes(), stream), "v_head zero");
-            for (int64_t t = 0; t < context; ++t) {
-                check_acl(aclrtMemcpyAsync(
-                    static_cast<uint8_t*>(v_head.data()) + t * head_bytes,
-                    head_bytes,
-                    static_cast<const uint8_t*>(v_cache.data()) + t * num_kv_heads * head_bytes + kv_h * head_bytes,
-                    head_bytes,
-                    ACL_MEMCPY_DEVICE_TO_DEVICE, stream), "v_head");
-            }
-        }
+    // The previous version looped 8 KV heads x 4 query heads and issued ~7 ops
+    // per query head. Attention moves only ~7 MB of KV per token but was taking
+    // 36% of the token's wall clock: the cost was op launch (~68 us each,
+    // ~8300 launches per token), not memory or math. Batching collapses that to
+    // 4 launches per layer regardless of head count.
+    const int64_t group_size = num_q_heads / num_kv_heads;
+    if (group_size * num_kv_heads != num_q_heads) {
+        throw std::runtime_error("incre_flash_attention num_q_heads must be a multiple of num_kv_heads");
+    }
 
-        for (int64_t g = 0; g < group_size; ++g) {
-            const int64_t q_h = kv_h * group_size + g;
+    // Pad mask [num_kv_heads, group_size, bucket]: 0.0 for real positions,
+    // -65504 (fp16 min) for pads, so padded lanes die in the softmax.
+    //
+    // Materialized at full shape rather than broadcast from a [bucket] row with
+    // stride 0: a stride-0 view declares an extent far larger than its backing
+    // allocation, which is a sharp edge for a kernel that sizes its reads off
+    // the declared extent. One host->device copy per layer is a few hundred KB
+    // at most.
+    const size_t mask_elems = static_cast<size_t>(num_kv_heads * group_size * bucket);
+    std::vector<uint16_t> mask_host(mask_elems, 0xFBFFu);
+    for (int64_t b = 0; b < num_kv_heads * group_size; ++b) {
+        uint16_t* row = mask_host.data() + static_cast<size_t>(b) * static_cast<size_t>(bucket);
+        for (int64_t t = 0; t < context; ++t) row[t] = 0x0000u;
+    }
+    Tensor pad_mask({num_kv_heads, group_size, bucket}, DType::Float16);
+    pad_mask.allocate();
+    pad_mask.copy_from_host(mask_host.data(), mask_elems * sizeof(uint16_t));
 
-            // q_vec: [1, head_dim]
-            {
-                ProfileScope _p("attn.gather_q", stream);
-                check_acl(aclrtMemcpyAsync(q_vec.data(), head_bytes,
-                         static_cast<const uint8_t*>(query.data()) + q_h * head_bytes,
-                         head_bytes, ACL_MEMCPY_DEVICE_TO_DEVICE, stream), "q_vec");
-            }
+    Tensor scores({num_kv_heads, group_size, bucket}, DType::Float16); scores.allocate();
 
-            // scores [1, bucket] = q @ k^T, then scale + pad-mask, then softmax
-            {
-                ProfileScope _p("attn.qk_softmax", stream);
-                matmul_b_transposed(q_vec, k_head, scores, stream);
+    // No gather: BatchMatMul reads the cache planes in place through strided
+    // views. The cache is [num_kv_heads, max_seq, head_dim], so a plane is a
+    // batch and the leading `bucket` rows of it are the window we want. Rows
+    // between context and bucket hold whatever the cache holds there -- zeros
+    // from allocation, or stale K/V from an earlier sequence -- and the mask
+    // discards them either way, so they never need to be copied or cleared.
+    //
+    // This removes two bucket-sized buffers, their memsets, and 16 memcpys per
+    // layer per token. It also drops peak memory, which matters: the weights
+    // already hold 10.4 GB of a 23 GB pool shared with the host.
+    const int64_t cache_elems = num_kv_heads * max_seq * head_dim;
 
-                AclTensorHandle hs;
-                make_acl_tensor(scores, hs);
-                aclScalar* scale_scalar = aclCreateScalar(&scale, ACL_FLOAT);
-                uint64_t ws_size = 0;
-                aclOpExecutor* executor = nullptr;
-                check_acl(aclnnMulsGetWorkspaceSize(hs.tensor, scale_scalar, hs.tensor, &ws_size, &executor), "muls ws");
-                run_op("aclnnMuls", ws_size, executor, stream, aclnnMuls);
-                aclDestroyScalar(scale_scalar);
+    // scores[b, g, :] = (q[b, g, :] . k[b, :, :]^T) * scale + mask
+    {
+        ProfileScope _p("attn.qk_softmax", stream);
+        AclTensorHandle hq, hk, hscores;
+        // query is [num_q_heads * head_dim] contiguous, viewed as [B, G, D].
+        make_acl_view(query, {num_kv_heads, group_size, head_dim},
+                      {group_size * head_dim, head_dim, 1},
+                      num_q_heads * head_dim, hq);
+        // k_cache [B, max_seq, D] -> [B, D, bucket]: transposed on its last two
+        // axes so BatchMatMul consumes it directly, and windowed to `bucket`
+        // rows. No k^T is materialized and nothing is copied.
+        make_acl_view(k_cache, {num_kv_heads, head_dim, bucket},
+                      {max_seq * head_dim, 1, head_dim}, cache_elems, hk);
+        make_acl_tensor(scores, hscores);
 
-                add(scores, pad_mask, masked_scores, stream);
-                softmax_last_dim(masked_scores, masked_scores, stream);
-            }
+        constexpr int8_t kCubeMathType = 1;  // ALLOW_FP32_DOWN_PRECISION
+        uint64_t ws_size = 0;
+        aclOpExecutor* executor = nullptr;
+        check_acl(aclnnBatchMatMulGetWorkspaceSize(hq.tensor, hk.tensor, hscores.tensor,
+                                                   kCubeMathType, &ws_size, &executor), "qk bmm ws");
+        run_op("aclnnBatchMatMul(qk)", ws_size, executor, stream, aclnnBatchMatMul);
 
-            // out_vec [1, head_dim] = masked_scores @ v_head
-            {
-                ProfileScope _p("attn.av_matmul", stream);
-                matmul(masked_scores, v_head, out_vec, stream);
-            }
+        aclScalar* scale_scalar = aclCreateScalar(&scale, ACL_FLOAT);
+        ws_size = 0; executor = nullptr;
+        check_acl(aclnnMulsGetWorkspaceSize(hscores.tensor, scale_scalar, hscores.tensor,
+                                            &ws_size, &executor), "muls ws");
+        run_op("aclnnMuls", ws_size, executor, stream, aclnnMuls);
+        aclDestroyScalar(scale_scalar);
 
-            // scatter to final output
-            {
-                ProfileScope _p("attn.scatter", stream);
-                check_acl(aclrtMemcpyAsync(
-                    static_cast<uint8_t*>(out.data()) + q_h * head_bytes,
-                    head_bytes,
-                    out_vec.data(), head_bytes,
-                    ACL_MEMCPY_DEVICE_TO_DEVICE, stream), "out_vec");
-            }
-        }
+        AclTensorHandle hmask;
+        make_acl_tensor(pad_mask, hmask);
+        float alpha_value = 1.0f;
+        aclScalar* alpha = aclCreateScalar(&alpha_value, ACL_FLOAT);
+        ws_size = 0; executor = nullptr;
+        check_acl(aclnnAddGetWorkspaceSize(hscores.tensor, hmask.tensor, alpha, hscores.tensor,
+                                           &ws_size, &executor), "mask add ws");
+        run_op("aclnnAdd", ws_size, executor, stream, aclnnAdd);
+        aclDestroyScalar(alpha);
+
+        softmax_last_dim(scores, scores, stream);
+    }
+
+    // out[b, g, :] = scores[b, g, :] @ v[b, :, :]; the [B, G, D] result is
+    // exactly out's existing [num_q_heads, head_dim] layout, so it is written
+    // in place with no scatter.
+    {
+        ProfileScope _p("attn.av_matmul", stream);
+        AclTensorHandle hscores, hv, hout;
+        make_acl_tensor(scores, hscores);
+        make_acl_view(v_cache, {num_kv_heads, bucket, head_dim},
+                      {max_seq * head_dim, head_dim, 1}, cache_elems, hv);
+        make_acl_view(out, {num_kv_heads, group_size, head_dim},
+                      {group_size * head_dim, head_dim, 1},
+                      num_q_heads * head_dim, hout);
+
+        constexpr int8_t kCubeMathType = 1;
+        uint64_t ws_size = 0;
+        aclOpExecutor* executor = nullptr;
+        check_acl(aclnnBatchMatMulGetWorkspaceSize(hscores.tensor, hv.tensor, hout.tensor,
+                                                   kCubeMathType, &ws_size, &executor), "av bmm ws");
+        run_op("aclnnBatchMatMul(av)", ws_size, executor, stream, aclnnBatchMatMul);
     }
 
     check_acl(aclrtSynchronizeStream(stream), "incre_flash_attention sync");
